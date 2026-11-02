@@ -2,6 +2,7 @@ const { EmbedBuilder } = require('discord.js');
 const { db, getSetting, setSetting } = require('./db');
 const { endGiveaway } = require('./giveaways');
 const { addXp } = require('./xp');
+const { expireTempBans } = require('./mod');
 const { nowParts } = require('./util');
 const questions = require('./questions');
 
@@ -57,6 +58,7 @@ async function tickScheduled(client) {
 
 function startScheduler(client) {
   setInterval(() => tickGiveaways(client).catch(console.error), 15_000);
+  setInterval(() => expireTempBans(client).catch(console.error), 30_000);
   setInterval(() => tickVoice(client).catch(console.error), 60_000);
   setInterval(() => tickScheduled(client).catch(console.error), 60_000);
 }

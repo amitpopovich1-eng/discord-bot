@@ -14,31 +14,50 @@
 - ⭐ Starboard – הודעות עם מספיק ⭐ עולות לערוץ מיוחד
 - 👋 הודעת ברוכים הבאים + רול אוטומטי
 
-**ניהול**
-- 🔨 `/ban` `/kick` `/timeout` `/clear` `/warn` `/warnings`
-- 🛡️ AutoMod: ספאם, לינקי הזמנה, תיוגים מרובים (`/setup automod`)
-- 🎫 טיקטים פרטיים עם כפתור – `/ticketpanel`
+**מיינקראפט ואימות**
+- 🔗 אימות חשבון: כפתור ← שם משתמש ← בדיקה מול Mojang ← רול מאומת + כינוי = שם במשחק (`/verifypanel`)
+- 🔐 **הוכחת בעלות אמיתית** (אופציונלי): קוד חד-פעמי שמקלידים בתוך המשחק, ראו `docs/minecraft-plugin.md`
+- חשבון מיינקראפט אחד = משתמש דיסקורד אחד · גיל מינימלי לחשבון · רול "לא מאומת" שמוסר באימות
+- `/whois` `/unlink` `/status` (שחקנים מחוברים, גרסה, MOTD)
 
-**כיף:** `/8ball` `/dice` `/coinflip` `/rps` · **כללי:** `/help` `/ping` `/userinfo`
+**טיקטים ותמיכה**
+- 🎫 תפריט קטגוריות (תמיכה / דיווח / ערעור / באג / אחר) ← טופס ← ערוץ פרטי ממוספר (`/ticketpanel`)
+- 🙋 תפיסת טיקט ע"י צוות, `/ticket add|remove`, סגירה עם **תמלול מלא** ללוג ול-DM של הפותח
+- 💡 הצעות עם הצבעת 👍/👎 וטיפול צוות באישור/דחייה/בחינה – `/suggest`, `/suggestion`
+- 🎭 פאנל רולים בכפתורים – `/rolepanel` (חוסם רולים עם הרשאות ניהול)
+
+**מודרציה**
+- Cases ממוספרים עם לוג אוטומטי ו-DM למשתמש: `/warn` `/timeout` `/kick` `/ban` `/unban` `/history` `/case`
+- ⏳ חסימה זמנית (`/ban duration:7d`) – משתחררת לבד
+- ⚖️ ענישה אוטומטית: 3 אזהרות ב-30 יום = השתקה שעה · 5 = 24 שעות · 7 = חסימה
+- 🛡️ AutoMod: ספאם, לינקי הזמנה, תיוגים מרובים, מילים אסורות (`/filter`)
+- `/clear` `/lock` `/slowmode`
+
+**כיף וכללי:** `/8ball` `/dice` `/coinflip` `/rps` `/help` `/ping` `/userinfo`
 
 ## התקנה
 1. https://discord.com/developers/applications → New Application → Bot → העתק Token.
 2. באותו עמוד הפעל **Server Members Intent** ו-**Message Content Intent**.
-3. `cp .env.example .env` ומלא `DISCORD_TOKEN`, `CLIENT_ID`, ועדיף `GUILD_ID` (רישום מיידי).
+3. `cp .env.example .env` ומלא `DISCORD_TOKEN`, `CLIENT_ID`, ועדיף `GUILD_ID` (רישום מיידי). להוכחת בעלות באימות מלאו גם `API_SECRET`.
 4. הזמנה: OAuth2 → URL Generator → scopes `bot` + `applications.commands`. הרשאות: Manage Roles, Manage Channels, Kick, Ban, Moderate Members, Manage Messages, Send Messages, Embed Links, Add Reactions, Create Public Threads, Read Message History.
 5. `npm install` ואז `npm start` (דורש Node 22.13+). הפקודות נרשמות אוטומטית בכל הפעלה.
 6. **שימו את הרול של הבוט מעל** כל רול שהוא אמור לתת (רול אוטומטי / רולים לפי רמה).
 
 ## הגדרה ראשונית מומלצת (בדיסקורד)
 ```
-/setup channel feature:ערוץ ברוכים הבאים channel:#welcome
-/setup channel feature:ערוץ שאלת היום channel:#chat
-/setup channel feature:ערוץ טבלת מובילים שבועית channel:#general
-/setup channel feature:ערוץ הודעות עליית רמה channel:#level-ups
+/setup role feature:רול צוות role:@Staff
+/setup role feature:רול מאומת role:@Verified
+/setup role feature:רול לא מאומת role:@Unverified
+/setup channel feature:לוג מודרציה ואימותים channel:#mod-log
+/setup channel feature:לוג וטרנסקריפטים של טיקטים channel:#ticket-logs
+/setup channel feature:הצעות channel:#suggestions
+/setup channel feature:ברוכים הבאים channel:#welcome
+/setup mcaddress address:play.example.com
 /setup automod enabled:True
-/levelrole add level:5 role:@פעיל
-/ticketpanel
+/verifypanel        (בערוץ #verify)
+/ticketpanel        (בערוץ #support)
 ```
+בשרת: הסתירו את רוב הערוצים מ-@Unverified והראו רק את `#verify`.
 
 ## אחסון והרצה 24/7
 הנתונים נשמרים ב-SQLite בתיקיית `data/` – חשוב לשמור אותה בין הפעלות (volume). אפשר להריץ על Railway, VPS או כל שרת עם Node.

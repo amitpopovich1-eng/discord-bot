@@ -1,5 +1,5 @@
 const { Events, MessageFlags } = require('discord.js');
-const { handleButton } = require('../buttons');
+const { handleComponent } = require('../components');
 
 module.exports = {
   name: Events.InteractionCreate,
@@ -8,8 +8,8 @@ module.exports = {
       if (interaction.isChatInputCommand()) {
         const cmd = client.commands.get(interaction.commandName);
         if (cmd) await cmd.execute(interaction);
-      } else if (interaction.isButton()) {
-        await handleButton(interaction);
+      } else if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isModalSubmit()) {
+        await handleComponent(interaction);
       }
     } catch (err) {
       console.error('interaction error:', err);

@@ -1,3 +1,4 @@
+process.env.DB_PATH = ':memory:';
 const test = require('node:test');
 const assert = require('node:assert');
 const { loadCommands } = require('../src/loadCommands');

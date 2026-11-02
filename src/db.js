@@ -2,9 +2,14 @@ const { DatabaseSync } = require('node:sqlite');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const dir = path.join(__dirname, '..', 'data');
-fs.mkdirSync(dir, { recursive: true });
-const db = new DatabaseSync(path.join(dir, 'bot.db'));
+// DB_PATH=':memory:' משמש בבדיקות כדי שלא ישתפו קובץ
+let file = process.env.DB_PATH;
+if (!file) {
+  const dir = path.join(__dirname, '..', 'data');
+  fs.mkdirSync(dir, { recursive: true });
+  file = path.join(dir, 'bot.db');
+}
+const db = new DatabaseSync(file);
 
 db.exec(`
 PRAGMA journal_mode = WAL;
@@ -24,9 +29,35 @@ CREATE TABLE IF NOT EXISTS level_roles (
   guild_id TEXT NOT NULL, level INTEGER NOT NULL, role_id TEXT NOT NULL,
   PRIMARY KEY (guild_id, level)
 );
-CREATE TABLE IF NOT EXISTS warnings (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, user_id TEXT NOT NULL,
-  mod_id TEXT NOT NULL, reason TEXT, created_at INTEGER NOT NULL
+CREATE TABLE IF NOT EXISTS cases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, case_no INTEGER NOT NULL,
+  type TEXT NOT NULL, user_id TEXT NOT NULL, mod_id TEXT NOT NULL, reason TEXT,
+  created_at INTEGER NOT NULL, expires_at INTEGER, active INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (guild_id, case_no)
+);
+CREATE INDEX IF NOT EXISTS idx_cases_user ON cases (guild_id, user_id);
+CREATE TABLE IF NOT EXISTS filter_words (
+  guild_id TEXT NOT NULL, word TEXT NOT NULL, PRIMARY KEY (guild_id, word)
+);
+CREATE TABLE IF NOT EXISTS tickets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, number INTEGER NOT NULL,
+  channel_id TEXT NOT NULL, user_id TEXT NOT NULL, category TEXT NOT NULL, subject TEXT,
+  claimed_by TEXT, status TEXT NOT NULL DEFAULT 'open', created_at INTEGER NOT NULL,
+  UNIQUE (guild_id, number)
+);
+CREATE TABLE IF NOT EXISTS suggestions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, number INTEGER NOT NULL,
+  message_id TEXT, user_id TEXT NOT NULL, content TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open', response TEXT, UNIQUE (guild_id, number)
+);
+CREATE TABLE IF NOT EXISTS suggestion_votes (
+  suggestion_id INTEGER NOT NULL, user_id TEXT NOT NULL, vote INTEGER NOT NULL,
+  PRIMARY KEY (suggestion_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS mc_links (
+  guild_id TEXT NOT NULL, user_id TEXT NOT NULL, uuid TEXT NOT NULL, ign TEXT NOT NULL,
+  verified_at INTEGER NOT NULL, proven INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (guild_id, user_id), UNIQUE (guild_id, uuid)
 );
 CREATE TABLE IF NOT EXISTS giveaways (
   id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL,

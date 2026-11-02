@@ -7,6 +7,9 @@ module.exports = {
     const roleId = getSetting(member.guild.id, 'auto_role');
     if (roleId) await member.roles.add(roleId, 'רול אוטומטי למצטרפים').catch(() => {});
 
+    const unverified = getSetting(member.guild.id, 'unverified_role');
+    if (unverified) await member.roles.add(unverified, 'ממתין לאימות').catch(() => {});
+
     const channelId = getSetting(member.guild.id, 'welcome_channel');
     const channel = channelId && member.guild.channels.cache.get(channelId);
     if (!channel?.isTextBased()) return;

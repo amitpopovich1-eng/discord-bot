@@ -1,9 +1,16 @@
 const { Events, PermissionFlagsBits } = require('discord.js');
-const { getSetting } = require('../db');
+const { db, getSetting } = require('../db');
+const { createCase } = require('../mod');
 const { addXp } = require('../xp');
 
 const xpCooldown = new Map(); // guild:user -> timestamp
 const spamTracker = new Map(); // guild:user -> [timestamps]
+const wordsStmt = db.prepare('SELECT word FROM filter_words WHERE guild_id = ?');
+const esc = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function hasBadWord(guildId, content) {
+  const lower = content.toLowerCase();
+  return wordsStmt.all(guildId).some(({ word }) => new RegExp(`(^|[^\\p{L}\\p{N}])${esc(word)}($|[^\\p{L}\\p{N}])`, 'u').test(lower));
+}
 const INVITE_RE = /(discord\.gg|discord(?:app)?\.com\/invite)\/\w+/i;
 
 async function automod(message) {
@@ -14,6 +21,7 @@ async function automod(message) {
   let reason = null;
   if (INVITE_RE.test(message.content)) reason = 'לינקים להזמנות אסורים כאן';
   else if (message.mentions.users.size >= 5) reason = 'תיוגים מרובים';
+  else if (hasBadWord(message.guild.id, message.content)) reason = 'שפה לא הולמת';
 
   if (!reason) {
     const key = `${message.guild.id}:${message.author.id}`;
@@ -25,6 +33,7 @@ async function automod(message) {
       spamTracker.delete(key);
       reason = 'ספאם';
       await member.timeout(5 * 60_000, 'AutoMod: ספאם').catch(() => {});
+      await createCase(message.guild, { type: 'timeout', userId: member.id, modId: message.client.user.id, reason: 'AutoMod: ספאם', expiresAt: Date.now() + 5 * 60_000 }).catch(() => {});
     }
   }
   if (!reason) return false;

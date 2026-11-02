@@ -1,5 +1,6 @@
 const { Events, ActivityType } = require('discord.js');
 const { startScheduler } = require('../scheduler');
+const { startApi } = require('../verify');
 const { registerCommands } = require('../deploy-commands');
 
 module.exports = {
@@ -10,5 +11,6 @@ module.exports = {
     client.user.setActivity('/help', { type: ActivityType.Listening });
     await registerCommands().catch((e) => console.error('רישום פקודות נכשל:', e.message));
     startScheduler(client);
+    startApi(client);
   },
 };

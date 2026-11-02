@@ -1,30 +1,35 @@
-const { SlashCommandBuilder, PermissionFlagsBits, MessageFlags } = require('discord.js');
+const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
+const { createCase } = require('../../mod');
+const { canActOn } = require('../../perms');
+const { parseDuration } = require('../../util');
+const { ephemeral } = require('../../ui');
 
 module.exports = {
   category: 'מודרציה',
   data: new SlashCommandBuilder()
-    .setName('ban')
-    .setDescription('חסימת משתמש מהשרת')
-    .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers)
-    .setContexts(0)
+    .setName('ban').setDescription('חסימת משתמש (קבועה או זמנית)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers).setContexts(0)
     .addUserOption((o) => o.setName('user').setDescription('המשתמש').setRequired(true))
-    .addStringOption((o) => o.setName('reason').setDescription('סיבה'))
-    .addIntegerOption((o) =>
-      o.setName('delete_days').setDescription('מחיקת הודעות מהימים האחרונים (0-7)').setMinValue(0).setMaxValue(7),
-    ),
-  async execute(interaction) {
-    const user = interaction.options.getUser('user');
-    const member = interaction.options.getMember('user');
-    const reason = interaction.options.getString('reason') ?? 'לא צוינה סיבה';
-    const days = interaction.options.getInteger('delete_days') ?? 0;
-
+    .addStringOption((o) => o.setName('reason').setDescription('סיבה').setMaxLength(400))
+    .addStringOption((o) => o.setName('duration').setDescription('חסימה זמנית: 12h, 7d, 2w (ריק = קבועה)'))
+    .addIntegerOption((o) => o.setName('delete_days').setDescription('מחיקת הודעות מהימים האחרונים (0-7)').setMinValue(0).setMaxValue(7)),
+  async execute(i) {
+    const user = i.options.getUser('user');
+    const member = i.options.getMember('user');
+    const reason = i.options.getString('reason') ?? 'לא צוינה סיבה';
+    const durStr = i.options.getString('duration');
+    const ms = durStr ? parseDuration(durStr) : null;
+    if (durStr && (!ms || ms < 6e4)) return i.reply(ephemeral('משך לא תקין. דוגמאות: `12h`, `7d`, `2w`.'));
+    if (user.id === i.user.id) return i.reply(ephemeral('אי אפשר לחסום את עצמך.'));
     if (member) {
-      if (!member.bannable) return interaction.reply({ content: 'אין לי הרשאה לחסום את המשתמש הזה.', flags: MessageFlags.Ephemeral });
-      if (member.roles.highest.position >= interaction.member.roles.highest.position && interaction.user.id !== interaction.guild.ownerId)
-        return interaction.reply({ content: 'אי אפשר לחסום מישהו עם רול גבוה או שווה לשלך.', flags: MessageFlags.Ephemeral });
+      if (!member.bannable) return i.reply(ephemeral('אין לי הרשאה לחסום את המשתמש הזה.'));
+      if (!canActOn(i.member, member)) return i.reply(ephemeral('אי אפשר לחסום מישהו עם רול גבוה או שווה לשלך.'));
     }
-
-    await interaction.guild.members.ban(user, { reason: `${interaction.user.tag}: ${reason}`, deleteMessageSeconds: days * 86400 });
-    await interaction.reply(`🔨 **${user.tag}** נחסם. סיבה: ${reason}`);
+    // DM נשלח לפני החסימה (אחרי החסימה אין ערוץ משותף)
+    const c = await createCase(i.guild, {
+      type: ms ? 'tempban' : 'ban', userId: user.id, modId: i.user.id, reason, expiresAt: ms ? Date.now() + ms : null,
+    });
+    await i.guild.members.ban(user, { reason: `Case #${c.case_no} · ${i.user.tag}: ${reason}`, deleteMessageSeconds: (i.options.getInteger('delete_days') ?? 0) * 86400 });
+    await i.reply({ content: `🔨 **${user.tag}** נחסם${ms ? ` ל-${durStr}` : ''}. Case #${c.case_no}`, allowedMentions: { parse: [] } });
   },
 };
