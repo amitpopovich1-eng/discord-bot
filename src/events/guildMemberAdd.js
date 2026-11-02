@@ -1,5 +1,6 @@
 const { Events, EmbedBuilder } = require('discord.js');
 const { getSetting } = require('../db');
+const { reconcileMember } = require('../verify');
 
 module.exports = {
   name: Events.GuildMemberAdd,
@@ -7,8 +8,10 @@ module.exports = {
     const roleId = getSetting(member.guild.id, 'auto_role');
     if (roleId) await member.roles.add(roleId, 'רול אוטומטי למצטרפים').catch(() => {});
 
+    // משתמש שכבר מקושר (עזב וחזר) מקבל מחדש את מצב המאומת במקום רול 'לא מאומת'
+    const relinked = await reconcileMember(member).catch((e) => { console.warn('[join] reconcile:', e.message); return null; });
     const unverified = getSetting(member.guild.id, 'unverified_role');
-    if (unverified) await member.roles.add(unverified, 'ממתין לאימות').catch(() => {});
+    if (unverified && !relinked) await member.roles.add(unverified, 'ממתין לאימות').catch(() => {});
 
     const channelId = getSetting(member.guild.id, 'welcome_channel');
     const channel = channelId && member.guild.channels.cache.get(channelId);

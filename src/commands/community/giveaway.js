@@ -32,8 +32,8 @@ module.exports = {
     if (!g) return i.reply({ content: 'הגרלה לא נמצאה.', flags: MessageFlags.Ephemeral });
     if (sub === 'end') {
       if (g.ended) return i.reply({ content: 'ההגרלה כבר הסתיימה.', flags: MessageFlags.Ephemeral });
-      await endGiveaway(i.client, g);
-      return i.reply({ content: '✅ ההגרלה הסתיימה.', flags: MessageFlags.Ephemeral });
+      const done = await endGiveaway(i.client, g);
+      return i.reply({ content: done === null ? 'ההגרלה כבר הסתיימה.' : '✅ ההגרלה הסתיימה.', flags: MessageFlags.Ephemeral });
     }
     if (!g.ended) return i.reply({ content: 'ההגרלה עדיין פעילה.', flags: MessageFlags.Ephemeral });
     const { pickWinners } = require('../../giveaways');

@@ -14,6 +14,14 @@ function brand(guild, color = COLORS.brand) {
   return e;
 }
 
+/** הודעות שיש להן collector פעיל (דפדוף/עזרה); נמחק בסיום או בהפעלה מחדש */
+const activeCollectors = new Set();
+const trackCollector = (msg, collector) => {
+  activeCollectors.add(msg.id);
+  collector.on('end', () => activeCollectors.delete(msg.id));
+};
+const isCollectorActive = (id) => activeCollectors.has(id);
+
 const ephemeral = (content) => ({ content, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
 
 /**
@@ -41,6 +49,7 @@ async function paginate(interaction, pages, { ephemeralReply = false, idleMs = 1
   if (pages.length === 1) return;
 
   const collector = msg.createMessageComponentCollector({ componentType: ComponentType.Button, idle: idleMs });
+  trackCollector(msg, collector);
   collector.on('collect', async (b) => {
     if (b.user.id !== interaction.user.id) return b.reply(ephemeral('רק מי שהריץ את הפקודה יכול לדפדף.'));
     page = { pg_first: 0, pg_prev: page - 1, pg_next: page + 1, pg_last: pages.length - 1 }[b.customId] ?? page;
@@ -59,4 +68,4 @@ function linePages(guild, title, lines, perPage = 10, color = COLORS.brand) {
   return pages;
 }
 
-module.exports = { COLORS, brand, ephemeral, paginate, linePages, StringSelectMenuBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle };
+module.exports = { COLORS, brand, ephemeral, trackCollector, isCollectorActive, paginate, linePages, StringSelectMenuBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle };

@@ -17,8 +17,12 @@ module.exports = {
     if (member.id === i.user.id) return i.reply(ephemeral('אי אפשר להרחיק את עצמך.'));
     if (!member.kickable) return i.reply(ephemeral('אין לי הרשאה להרחיק את המשתמש הזה.'));
     if (!canActOn(i.member, member)) return i.reply(ephemeral('אי אפשר להרחיק מישהו עם רול גבוה או שווה לשלך.'));
-    const c = await createCase(i.guild, { type: 'kick', userId: member.id, modId: i.user.id, reason });
-    await member.kick(`Case #${c.case_no} · ${i.user.tag}: ${reason}`);
-    await i.reply({ content: `👢 **${member.user.tag}** הורחק. Case #${c.case_no}`, allowedMentions: { parse: [] } });
+    await i.deferReply();
+    try {
+      const c = await createCase(i.guild, { type: 'kick', userId: member.id, modId: i.user.id, reason, dmFirst: true, action: () => member.kick(`${i.user.tag}: ${reason}`) });
+      await i.editReply({ content: `👢 **${member.user.tag}** הורחק. Case #${c.case_no}${c.dmOk === false ? ' · (לא ניתן לשלוח DM)' : ''}`, allowedMentions: { parse: [] } });
+    } catch (e) {
+      await i.editReply(`❌ ההרחקה נכשלה: ${e.message}`);
+    }
   },
 };

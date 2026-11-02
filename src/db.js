@@ -2,17 +2,30 @@ const { DatabaseSync } = require('node:sqlite');
 const fs = require('node:fs');
 const path = require('node:path');
 
-// DB_PATH=':memory:' משמש בבדיקות כדי שלא ישתפו קובץ
+// DB_PATH: נתיב לקובץ ה-DB (בפריסה: קובץ על volume קבוע). ':memory:' לבדיקות.
 let file = process.env.DB_PATH;
 if (!file) {
-  const dir = path.join(__dirname, '..', 'data');
-  fs.mkdirSync(dir, { recursive: true });
-  file = path.join(dir, 'bot.db');
+  file = path.join(__dirname, '..', 'data', 'bot.db');
+}
+if (file !== ':memory:') {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.accessSync(path.dirname(file), fs.constants.W_OK);
+  } catch (e) {
+    console.error(`❌ אי אפשר לכתוב ל-${path.dirname(file)} (${e.code}). הגדירו DB_PATH לתיקייה עם הרשאת כתיבה (volume קבוע).`);
+    process.exit(1);
+  }
 }
 const db = new DatabaseSync(file);
+db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA synchronous = NORMAL;');
 
-db.exec(`
-PRAGMA journal_mode = WAL;
+/**
+ * מיגרציות לפי PRAGMA user_version. כל מיגרציה רצה פעם אחת, בתוך טרנזקציה.
+ * לעולם לא עורכים מיגרציה קיימת - רק מוסיפים חדשה בסוף המערך.
+ */
+const MIGRATIONS = [
+  // 1: סכמה התחלתית
+  `
 CREATE TABLE IF NOT EXISTS settings (
   guild_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT,
   PRIMARY KEY (guild_id, key)
@@ -71,7 +84,55 @@ CREATE TABLE IF NOT EXISTS giveaway_entries (
 CREATE TABLE IF NOT EXISTS starboard (
   message_id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, star_message_id TEXT
 );
-`);
+  `,
+  // 2: קודי אימות מתמידים (hash בלבד), הגבלת ניסיונות, אינדקסים
+  `
+  CREATE TABLE verify_codes (
+    code_hash TEXT PRIMARY KEY, guild_id TEXT NOT NULL, uuid TEXT NOT NULL, ign TEXT NOT NULL,
+    created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX idx_verify_codes_uuid ON verify_codes (guild_id, uuid);
+  CREATE TABLE verify_attempts (
+    guild_id TEXT NOT NULL, user_id TEXT NOT NULL, failures INTEGER NOT NULL DEFAULT 0,
+    window_start INTEGER NOT NULL, PRIMARY KEY (guild_id, user_id)
+  );
+  CREATE INDEX idx_tickets_channel ON tickets (channel_id);
+  CREATE INDEX idx_tickets_user ON tickets (guild_id, user_id, status);
+  CREATE INDEX idx_cases_tempban ON cases (type, active, expires_at);
+  `,
+];
+
+function migrate() {
+  const current = db.prepare('PRAGMA user_version').get().user_version;
+  for (let v = current; v < MIGRATIONS.length; v++) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.exec(MIGRATIONS[v]);
+      db.exec(`PRAGMA user_version = ${v + 1}`);
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      console.error(`❌ מיגרציה ${v + 1} נכשלה:`, e.message);
+      process.exit(1);
+    }
+  }
+}
+
+/** מריץ fn בטרנזקציה אטומית (סינכרוני); זורק => rollback */
+function transaction(fn) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const r = fn();
+    db.exec('COMMIT');
+    return r;
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+
+migrate();
 
 const q = {
   getSetting: db.prepare('SELECT value FROM settings WHERE guild_id = ? AND key = ?'),
@@ -83,6 +144,7 @@ const q = {
 
 module.exports = {
   db,
+  transaction,
   getSetting: (guildId, key) => q.getSetting.get(guildId, key)?.value ?? null,
   setSetting: (guildId, key, value) => q.setSetting.run(guildId, key, String(value)),
   delSetting: (guildId, key) => q.delSetting.run(guildId, key),

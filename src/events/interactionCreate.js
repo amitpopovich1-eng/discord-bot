@@ -5,6 +5,10 @@ module.exports = {
   name: Events.InteractionCreate,
   async execute(interaction, client) {
     try {
+      if (!interaction.guild) {
+        if (interaction.isRepliable()) await interaction.reply({ content: 'הבוט עובד רק בתוך שרת.', flags: MessageFlags.Ephemeral });
+        return;
+      }
       if (interaction.isChatInputCommand()) {
         const cmd = client.commands.get(interaction.commandName);
         if (cmd) await cmd.execute(interaction);

@@ -30,5 +30,33 @@ for (const file of fs.readdirSync(path.join(__dirname, 'events')).filter((f) => 
   );
 }
 
+client.on('error', (e) => console.error('[discord] client error:', e.message));
+client.on('warn', (m) => console.warn('[discord]', m));
+client.on('shardDisconnect', (ev, id) => console.warn(`[discord] shard ${id} disconnected (${ev.code}); discord.js will reconnect`));
+client.on('shardReconnecting', (id) => console.log(`[discord] shard ${id} reconnecting`));
+
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
-client.login(process.env.DISCORD_TOKEN);
+
+// סגירה מסודרת (deploy / הפעלה מחדש): סוגרים חיבור ל-Discord ול-DB כדי שה-WAL ייכתב
+let closing = false;
+async function shutdown(signal) {
+  if (closing) return;
+  closing = true;
+  console.log(`${signal}: סוגר...`);
+  const force = setTimeout(() => process.exit(1), 10_000);
+  force.unref();
+  try {
+    await client.destroy();
+    require('./db').db.close();
+  } catch (e) {
+    console.error('שגיאה בסגירה:', e.message);
+  }
+  process.exit(0);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+client.login(process.env.DISCORD_TOKEN).catch((e) => {
+  console.error(`❌ התחברות ל-Discord נכשלה: ${e.message}. בדקו את DISCORD_TOKEN ואת ה-Intents ב-Developer Portal.`);
+  process.exit(1);
+});

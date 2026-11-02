@@ -30,16 +30,17 @@ function pickWinners(giveawayId, n) {
   return ids.slice(0, n);
 }
 
+/** מסיים הגרלה בדיוק פעם אחת, גם אם הפקודה והתזמון רצים במקביל. מחזיר null אם כבר הסתיימה. */
 async function endGiveaway(client, g) {
-  db.prepare('UPDATE giveaways SET ended = 1 WHERE id = ?').run(g.id);
+  if (db.prepare('UPDATE giveaways SET ended = 1 WHERE id = ? AND ended = 0').run(g.id).changes !== 1) return null;
   const winners = pickWinners(g.id, g.winners);
   const channel = await client.channels.fetch(g.channel_id).catch(() => null);
-  if (!channel) return winners;
+  if (!channel) { console.warn(`[giveaway] #${g.id}: ערוץ לא נמצא`); return winners; }
   const msg = await channel.messages.fetch(g.message_id).catch(() => null);
   if (msg) await msg.edit(giveawayMessage(g, true, winners)).catch(() => {});
   await channel.send(
     winners.length ? `🎊 מזל טוב ${winners.map((id) => `<@${id}>`).join(', ')}! זכיתם ב-**${g.prize}**` : `לא היו משתתפים בהגרלה על **${g.prize}**.`
-  ).catch(() => {});
+  ).catch((e) => console.warn(`[giveaway] #${g.id}: הכרזה נכשלה: ${e.message}`));
   return winners;
 }
 

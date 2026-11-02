@@ -1,6 +1,7 @@
 const { Events, ActivityType } = require('discord.js');
 const { startScheduler } = require('../scheduler');
-const { startApi } = require('../verify');
+const { startApi } = require('../api');
+const { reconcileTickets } = require('../tickets');
 const { registerCommands } = require('../deploy-commands');
 
 module.exports = {
@@ -10,6 +11,7 @@ module.exports = {
     console.log(`מחובר כ-${client.user.tag} ב-${client.guilds.cache.size} שרתים`);
     client.user.setActivity('/help', { type: ActivityType.Listening });
     await registerCommands().catch((e) => console.error('רישום פקודות נכשל:', e.message));
+    await reconcileTickets(client).catch((e) => console.error('ticket reconcile:', e.message));
     startScheduler(client);
     startApi(client);
   },

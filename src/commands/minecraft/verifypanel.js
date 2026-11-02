@@ -11,7 +11,7 @@ module.exports = {
       new ButtonBuilder().setCustomId('verify_start').setLabel('✅ אימות חשבון').setStyle(ButtonStyle.Success));
     await i.channel.send({
       embeds: [brand(i.guild, COLORS.success).setTitle('🔗 אימות חשבון מיינקראפט')
-        .setDescription('קשרו את חשבון המיינקראפט שלכם לדיסקורד כדי לקבל גישה לשאר השרת, רול מאומת ושם משתמש מסונכרן.')],
+        .setDescription('קשרו את חשבון המיינקראפט שלכם לדיסקורד כדי לקבל גישה לשאר השרת.\n\n**1.** היכנסו לשרת המיינקראפט\n**2.** הקלידו `/discord link` וקבלו קוד (תקף 5 דקות)\n**3.** לחצו על הכפתור והדביקו את הקוד\n\n⚠️ לעולם אל תשלחו את הקוד לאף אחד.')],
       components: [row],
     });
     await i.reply(ephemeral('✅ הפאנל נשלח.'));

@@ -1,5 +1,5 @@
 const { SlashCommandBuilder, ActionRowBuilder, StringSelectMenuBuilder, ComponentType, MessageFlags } = require('discord.js');
-const { brand, ephemeral } = require('../../ui');
+const { brand, trackCollector } = require('../../ui');
 
 const ICONS = { 'קהילה': '🏆', 'מודרציה': '🛡️', 'ניהול': '⚙️', 'מיינקראפט': '⛏️', 'תמיכה': '🎫', 'בידור': '🎲', 'כללי': '📖' };
 
@@ -23,6 +23,7 @@ module.exports = {
     const first = names[0];
     const msg = await i.reply({ embeds: [embedFor(first)], components: [menu(first)], flags: MessageFlags.Ephemeral, withResponse: true }).then((r) => r.resource.message);
     const col = msg.createMessageComponentCollector({ componentType: ComponentType.StringSelect, idle: 120_000 });
+    trackCollector(msg, col);
     col.on('collect', (s) => s.update({ embeds: [embedFor(s.values[0])], components: [menu(s.values[0])] }));
     col.on('end', () => i.editReply({ components: [] }).catch(() => {}));
   },

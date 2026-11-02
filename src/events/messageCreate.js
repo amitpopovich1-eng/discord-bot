@@ -32,8 +32,12 @@ async function automod(message) {
     if (list.length >= 6) {
       spamTracker.delete(key);
       reason = 'ספאם';
-      await member.timeout(5 * 60_000, 'AutoMod: ספאם').catch(() => {});
-      await createCase(message.guild, { type: 'timeout', userId: member.id, modId: message.client.user.id, reason: 'AutoMod: ספאם', expiresAt: Date.now() + 5 * 60_000 }).catch(() => {});
+      if (member.moderatable) {
+        await createCase(message.guild, {
+          type: 'timeout', userId: member.id, modId: message.client.user.id, reason: 'AutoMod: ספאם', expiresAt: Date.now() + 5 * 60_000,
+          action: () => member.timeout(5 * 60_000, 'AutoMod: ספאם'),
+        }).catch((e) => console.warn(`[automod] timeout failed: ${e.message}`));
+      }
     }
   }
   if (!reason) return false;

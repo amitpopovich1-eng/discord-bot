@@ -15,6 +15,9 @@ module.exports = {
   })(),
   async execute(i) {
     const roles = [1, 2, 3, 4, 5].map((n) => i.options.getRole(`role${n}`)).filter(Boolean);
+    // היוצר לא יכול לחשוף בפאנל רול שמעל הרול הגבוה שלו (מניעת הסלמת הרשאות)
+    const above = roles.find((r) => i.user.id !== i.guild.ownerId && r.position >= i.member.roles.highest.position);
+    if (above) return i.reply(ephemeral(`אי אפשר לשים בפאנל את **${above.name}**: הוא לא נמוך מהרול הגבוה שלך.`));
     const bad = roles.find((r) => r.managed || r.position >= i.guild.members.me.roles.highest.position || r.permissions.has(DANGEROUS));
     if (bad) return i.reply(ephemeral(`הרול **${bad.name}** לא מתאים: רול של בוט, מעל הבוט, או עם הרשאות ניהול.`));
     const row = new ActionRowBuilder().addComponents(

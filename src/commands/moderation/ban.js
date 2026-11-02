@@ -25,11 +25,16 @@ module.exports = {
       if (!member.bannable) return i.reply(ephemeral('אין לי הרשאה לחסום את המשתמש הזה.'));
       if (!canActOn(i.member, member)) return i.reply(ephemeral('אי אפשר לחסום מישהו עם רול גבוה או שווה לשלך.'));
     }
-    // DM נשלח לפני החסימה (אחרי החסימה אין ערוץ משותף)
-    const c = await createCase(i.guild, {
-      type: ms ? 'tempban' : 'ban', userId: user.id, modId: i.user.id, reason, expiresAt: ms ? Date.now() + ms : null,
-    });
-    await i.guild.members.ban(user, { reason: `Case #${c.case_no} · ${i.user.tag}: ${reason}`, deleteMessageSeconds: (i.options.getInteger('delete_days') ?? 0) * 86400 });
-    await i.reply({ content: `🔨 **${user.tag}** נחסם${ms ? ` ל-${durStr}` : ''}. Case #${c.case_no}`, allowedMentions: { parse: [] } });
+    await i.deferReply();
+    try {
+      // ה-DM נשלח לפני החסימה (אחריה אין ערוץ משותף). אם החסימה נכשלת ה-Case נמחק.
+      const c = await createCase(i.guild, {
+        type: ms ? 'tempban' : 'ban', userId: user.id, modId: i.user.id, reason, expiresAt: ms ? Date.now() + ms : null, dmFirst: true,
+        action: () => i.guild.members.ban(user, { reason: `${i.user.tag}: ${reason}`, deleteMessageSeconds: (i.options.getInteger('delete_days') ?? 0) * 86400 }),
+      });
+      await i.editReply({ content: `🔨 **${user.tag}** נחסם${ms ? ` ל-${durStr}` : ''}. Case #${c.case_no}${c.dmOk === false ? ' · (לא ניתן לשלוח DM)' : ''}`, allowedMentions: { parse: [] } });
+    } catch (e) {
+      await i.editReply(`❌ החסימה נכשלה: ${e.message}`);
+    }
   },
 };

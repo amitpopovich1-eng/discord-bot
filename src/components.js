@@ -3,8 +3,8 @@ const { db } = require('./db');
 const { giveawayMessage } = require('./giveaways');
 const tickets = require('./tickets');
 const suggestions = require('./suggestions');
-const { startVerification, proofMode } = require('./verify');
-const { ephemeral, brand, COLORS } = require('./ui');
+const { redeemCode, applyVerifiedState, logToStaff } = require('./verify');
+const { ephemeral, brand, COLORS, isCollectorActive } = require('./ui');
 const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
 
 const DANGEROUS = PermissionFlagsBits.Administrator | PermissionFlagsBits.ManageGuild | PermissionFlagsBits.ManageRoles
@@ -39,20 +39,25 @@ async function handleComponent(i) {
 
   if (action === 'verify_start') {
     const linked = db.prepare('SELECT ign FROM mc_links WHERE guild_id = ? AND user_id = ?').get(i.guild.id, i.user.id);
-    if (linked) return i.reply(ephemeral(`כבר אומת החשבון **${linked.ign}** ✅`));
+    if (linked) {
+      await i.deferReply({ flags: MessageFlags.Ephemeral });
+      const failures = await applyVerifiedState(i.member, linked.ign); // מתקן רולים שנכשלו בעבר
+      return i.editReply(failures.length ? `החשבון **${linked.ign}** מקושר, אבל לא הצלחתי לעדכן את הרולים. פנו לצוות.` : `כבר אומת החשבון **${linked.ign}** ✅`);
+    }
     return i.showModal(new ModalBuilder().setCustomId('verify_modal').setTitle('אימות חשבון מיינקראפט').addComponents(
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('ign').setLabel('שם המשתמש שלך במיינקראפט').setStyle(TextInputStyle.Short).setMinLength(3).setMaxLength(16).setRequired(true)),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('code').setLabel('הקוד שקיבלתם במשחק (/discord link)')
+        .setStyle(TextInputStyle.Short).setMinLength(6).setMaxLength(12).setRequired(true).setPlaceholder('XXXX-XXXX')),
     ));
   }
   if (action === 'verify_modal') {
     await i.deferReply({ flags: MessageFlags.Ephemeral });
-    const r = await startVerification(i.member, i.fields.getTextInputValue('ign').trim());
-    if (r.error) return i.editReply(r.error);
-    if (r.done) return i.editReply(`✅ החשבון **${r.ign}** קושר בהצלחה!`);
-    return i.editReply({
-      embeds: [brand(i.guild, COLORS.info).setTitle('כמעט שם! 🎮').setDescription(
-        `היכנסו לשרת המיינקראפט עם **${r.ign}** והקלידו:\n\`\`\`/discord verify ${r.code}\`\`\`הקוד תקף עד <t:${Math.floor(r.expiresAt / 1000)}:R>.`)],
-    });
+    const r = redeemCode(i.guild.id, i.user.id, i.fields.getTextInputValue('code'), { accountCreatedAt: i.user.createdTimestamp });
+    if (!r.ok) return i.editReply(r.error);
+    const failures = await applyVerifiedState(i.member, r.ign);
+    await logToStaff(i.guild, `✅ ${i.user} אומת/ה כ-**${r.ign}** (\`${r.uuid}\`)`, COLORS.success);
+    return i.editReply(failures.length
+      ? `✅ החשבון **${r.ign}** קושר, אבל לא הצלחתי לעדכן את הרולים. לחצו שוב על כפתור האימות או פנו לצוות.`
+      : `✅ החשבון **${r.ign}** קושר בהצלחה!`);
   }
 
   if (action === 'role') {
@@ -65,6 +70,13 @@ async function handleComponent(i) {
     await (has ? i.member.roles.remove(role) : i.member.roles.add(role));
     return i.reply(ephemeral(has ? `הרול **${role.name}** הוסר.` : `קיבלת את הרול **${role.name}** ✅`));
   }
+
+  // כפתורי דפדוף/תפריט עזרה חיים רק כל עוד ה-collector שלהם פעיל (נעלם בהפעלה מחדש)
+  if (action.startsWith('pg_') || action === 'help_select') {
+    if (isCollectorActive(i.message?.id)) return; // ה-collector יטפל
+    return i.reply(ephemeral('התצוגה פגה. הריצו את הפקודה שוב.'));
+  }
+  return i.reply(ephemeral('הכפתור הזה כבר לא פעיל.'));
 }
 
 module.exports = { handleComponent, DANGEROUS };
