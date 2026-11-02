@@ -1,8 +1,6 @@
 /** תשתית משותפת לבדיקות: אובייקטי Discord מדומים. */
 process.env.DB_PATH = process.env.DB_PATH || ':memory:';
 
-const SECRET = 'a'.repeat(40);
-process.env.API_SECRET = SECRET;
 
 function collection(items = []) {
   const arr = [...items];
@@ -82,4 +80,4 @@ function fakeInteraction({ guild, user, member, channel, fields = {}, values, me
 const text = (x) => (typeof x === 'string' ? x : x?.content ?? '');
 const allText = (i) => [...i.calls.replies, ...i.calls.edits, ...i.calls.follow].map(text).join('\n');
 
-module.exports = { SECRET, collection, fakeMember, fakeGuild, fakeTextChannel, fakeInteraction, text, allText };
+module.exports = { collection, fakeMember, fakeGuild, fakeTextChannel, fakeInteraction, text, allText };

@@ -3,7 +3,7 @@ const { db } = require('./db');
 const { giveawayMessage } = require('./giveaways');
 const tickets = require('./tickets');
 const suggestions = require('./suggestions');
-const { redeemCode, applyVerifiedState, logToStaff } = require('./verify');
+const { verifyAccount, applyVerifiedState, logToStaff } = require('./verify');
 const { ephemeral, brand, COLORS, isCollectorActive } = require('./ui');
 const { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } = require('discord.js');
 
@@ -45,16 +45,19 @@ async function handleComponent(i) {
       return i.editReply(failures.length ? `החשבון **${linked.ign}** מקושר, אבל לא הצלחתי לעדכן את הרולים. פנו לצוות.` : `כבר אומת החשבון **${linked.ign}** ✅`);
     }
     return i.showModal(new ModalBuilder().setCustomId('verify_modal').setTitle('אימות חשבון מיינקראפט').addComponents(
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('code').setLabel('הקוד שקיבלתם במשחק (/discord link)')
-        .setStyle(TextInputStyle.Short).setMinLength(6).setMaxLength(12).setRequired(true).setPlaceholder('XXXX-XXXX')),
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('ign').setLabel('שם המשתמש שלך במיינקראפט')
+        .setStyle(TextInputStyle.Short).setMinLength(3).setMaxLength(16).setRequired(true)),
     ));
   }
   if (action === 'verify_modal') {
     await i.deferReply({ flags: MessageFlags.Ephemeral });
-    const r = redeemCode(i.guild.id, i.user.id, i.fields.getTextInputValue('code'), { accountCreatedAt: i.user.createdTimestamp });
+    const r = await verifyAccount(
+      { guildId: i.guild.id, user: { id: i.user.id, username: i.user.username, discriminator: i.user.discriminator, createdTimestamp: i.user.createdTimestamp }, ign: i.fields.getTextInputValue('ign') },
+      { onServiceError: (e) => { if (e.kind === 'auth') logToStaff(i.guild, '⚠️ אימות מיינקראפט לא עובד: מפתח ה-API של Hypixel חסר או נדחה. בדקו את `HYPIXEL_API_KEY`.').catch(() => {}); } },
+    );
     if (!r.ok) return i.editReply(r.error);
     const failures = await applyVerifiedState(i.member, r.ign);
-    await logToStaff(i.guild, `✅ ${i.user} אומת/ה כ-**${r.ign}** (\`${r.uuid}\`)`, COLORS.success);
+    await logToStaff(i.guild, `✅ ${i.user} אומת/ה כ-**${r.ign}** (\`${r.uuid}\`) דרך קישור Discord בפרופיל Hypixel`, COLORS.success);
     return i.editReply(failures.length
       ? `✅ החשבון **${r.ign}** קושר, אבל לא הצלחתי לעדכן את הרולים. לחצו שוב על כפתור האימות או פנו לצוות.`
       : `✅ החשבון **${r.ign}** קושר בהצלחה!`);

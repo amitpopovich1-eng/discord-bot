@@ -5,7 +5,7 @@ const { addXp } = require('./xp');
 const { expireTempBans } = require('./mod');
 const { nowParts } = require('./util');
 const questions = require('./questions');
-const { pruneCodes } = require('./verify');
+const { pruneAttempts } = require('./verify');
 
 const VOICE_XP = 10;
 
@@ -81,7 +81,7 @@ function startScheduler(client) {
     every('tempbans', 30_000, () => expireTempBans(client)),
     every('voice', 60_000, () => tickVoice(client), { immediate: false }),
     every('scheduled', 60_000, () => tickScheduled(client)),
-    every('prune', 6 * 36e5, async () => pruneCodes()),
+    every('prune', 6 * 36e5, async () => pruneAttempts()),
   ];
   return () => timers.forEach(clearInterval);
 }

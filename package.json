@@ -4,11 +4,14 @@
   "description": "בוט קהילה לדיסקורד: רמות, סטריקים, גיוויאווייז, מודרציה, טיקטים ועוד",
   "main": "src/index.js",
   "type": "commonjs",
-  "engines": { "node": ">=22.13" },
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "start": "node src/index.js",
     "deploy": "node src/deploy-commands.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "check:hypixel": "node scripts/check-hypixel.js"
   },
   "dependencies": {
     "discord.js": "^14.16.3",

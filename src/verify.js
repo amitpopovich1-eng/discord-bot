@@ -1,76 +1,23 @@
 /**
- * אימות חשבון מיינקראפט.
+ * אימות חשבון מיינקראפט דרך Hypixel (בלי שרת/פלאגין).
  *
- * מודל: השרת (הפלאגין) מנפיק קוד לשחקן המחובר לפי ה-UUID שלו; השחקן מזין את הקוד בדיסקורד.
- * מי שמחזיק בקוד הוא מי שראה אותו בתוך המשחק. הקוד נוצר בצד השרת בלבד, כך שאי אפשר
- * "לדחוף" לשחקן קוד של מישהו אחר (הנדסה חברתית בכיוון ההפוך).
+ * הוכחת הבעלות: השחקן מגדיר את שם המשתמש שלו בדיסקורד בפרופיל ה-Hypixel שלו (Social Media > Discord).
+ * רק מי שמחובר לחשבון Hypixel יכול לשנות זאת. הבוט קורא את הערך דרך ה-API הציבורי ומשווה לשם המשתמש
+ * של מי שלחץ על הכפתור. בלי התאמה - אין אימות, אין רול. כל כשל שירות מוביל לאי-אימות (fail closed).
  *
- * כל המצב נשמר ב-DB (לא בזיכרון), והקודים נשמרים כ-HMAC בלבד.
+ * מגבלות (ראו docs/verification.md): הערך בפרופיל הוא טקסט חופשי ש-Hypixel לא מאמת מול Discord,
+ * והתאמה נבדקת ברגע האימות בלבד.
  */
-const crypto = require('node:crypto');
 const { db, getSetting, transaction } = require('./db');
 const { brand, COLORS } = require('./ui');
+const hypixel = require('./hypixel');
 
-const CODE_LEN = 8;
-const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // 31 תווים, בלי 0/O/1/I/L
-const CODE_TTL_MS = 5 * 60_000;
-const ISSUE_COOLDOWN_MS = 30_000;
 const MAX_FAILURES = 5;
 const FAIL_WINDOW_MS = 15 * 60_000;
 
-const UUID_RE = /^[0-9a-f]{32}$/;
-const NAME_RE = /^[A-Za-z0-9_]{1,16}$/;
-
-const normUuid = (u) => String(u ?? '').replace(/-/g, '').toLowerCase();
-const normCode = (c) => String(c ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-const fmtCode = (c) => `${c.slice(0, 4)}-${c.slice(4)}`;
-
-function secret() {
-  const s = process.env.API_SECRET;
-  if (!s || s.length < 32) throw new Error('API_SECRET חסר או קצר מ-32 תווים');
-  return s;
-}
-const hashCode = (code) => crypto.createHmac('sha256', secret()).update(`code:${code}`).digest('hex');
-
-function makeCode() {
-  let c = '';
-  for (let i = 0; i < CODE_LEN; i++) c += CODE_ALPHABET[crypto.randomInt(CODE_ALPHABET.length)];
-  return c;
-}
-
-/**
- * הנפקת קוד לשחקן (נקרא מה-API כשהשחקן מריץ /discord link בשרת).
- * @returns {{status:number, code?:string, expiresAt?:number, retryAfter?:number, error?:string}}
- */
-function issueCode({ guildId, uuid, name, now = Date.now() }) {
-  const id = normUuid(uuid);
-  if (!UUID_RE.test(id)) return { status: 400, error: 'invalid_uuid' };
-  if (!NAME_RE.test(String(name ?? ''))) return { status: 400, error: 'invalid_name' };
-
-  return transaction(() => {
-    if (db.prepare('SELECT 1 FROM mc_links WHERE guild_id = ? AND uuid = ?').get(guildId, id)) {
-      return { status: 409, error: 'already_linked' };
-    }
-    const last = db.prepare('SELECT created_at FROM verify_codes WHERE guild_id = ? AND uuid = ? ORDER BY created_at DESC LIMIT 1').get(guildId, id);
-    if (last && now - last.created_at < ISSUE_COOLDOWN_MS) {
-      return { status: 429, error: 'cooldown', retryAfter: Math.ceil((ISSUE_COOLDOWN_MS - (now - last.created_at)) / 1000) };
-    }
-    db.prepare('DELETE FROM verify_codes WHERE guild_id = ? AND uuid = ?').run(guildId, id); // קוד פעיל אחד לכל חשבון
-    let code;
-    for (;;) { // התנגשות כמעט בלתי אפשרית, אבל PK מבטיח ייחודיות
-      code = makeCode();
-      if (!db.prepare('SELECT 1 FROM verify_codes WHERE code_hash = ?').get(hashCode(code))) break;
-    }
-    db.prepare('INSERT INTO verify_codes (code_hash, guild_id, uuid, ign, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(hashCode(code), guildId, id, name, now, now + CODE_TTL_MS);
-    return { status: 200, code: fmtCode(code), expiresAt: now + CODE_TTL_MS };
-  });
-}
-
 function checkLockout(guildId, userId, now) {
   const row = db.prepare('SELECT failures, window_start FROM verify_attempts WHERE guild_id = ? AND user_id = ?').get(guildId, userId);
-  if (!row) return null;
-  if (now - row.window_start > FAIL_WINDOW_MS) return null;
+  if (!row || now - row.window_start > FAIL_WINDOW_MS) return null;
   return row.failures >= MAX_FAILURES ? Math.ceil((FAIL_WINDOW_MS - (now - row.window_start)) / 60_000) : null;
 }
 
@@ -85,54 +32,71 @@ function recordFailure(guildId, userId, now) {
   return Math.max(0, MAX_FAILURES - row.failures);
 }
 
+const SERVICE_MESSAGES = {
+  auth: 'האימות לא זמין כרגע (בעיית הגדרה בבוט). הצוות קיבל התראה.',
+  rate_limited: 'השירות עמוס כרגע. נסו שוב בעוד דקה.',
+  unavailable: 'לא הצלחתי להגיע ל-Hypixel/Mojang כרגע. נסו שוב עוד רגע. (לא נספר כניסיון כושל)',
+  malformed: 'קיבלתי תשובה לא צפויה מהשירות, ולכן לא אימתתי. נסו שוב מאוחר יותר.',
+};
+
 /**
- * מימוש קוד ע"י משתמש דיסקורד. כל הבדיקות והכתיבה בטרנזקציה אחת:
- * או שהקוד נצרך והקישור נוצר, או שלא קרה כלום.
- * @returns {{ok:true, ign:string, uuid:string} | {ok:false, error:string}}
+ * מאמת שמשתמש הדיסקורד הוא בעל חשבון המיינקראפט `ign`.
+ * @param {{guildId:string,user:{id:string,username:string,discriminator?:string,createdTimestamp?:number},ign:string}} a
+ * @param {{fetchImpl?:Function, apiKey?:string, now?:number, onServiceError?:Function}} deps
+ * @returns {Promise<{ok:true, ign:string, uuid:string} | {ok:false, error:string, service?:boolean}>}
  */
-function redeemCode(guildId, userId, rawCode, { accountCreatedAt, now = Date.now() } = {}) {
-  const locked = checkLockout(guildId, userId, now);
+async function verifyAccount({ guildId, user, ign }, { fetchImpl, apiKey = process.env.HYPIXEL_API_KEY, now = Date.now(), onServiceError } = {}) {
+  if (!apiKey) return { ok: false, service: true, error: SERVICE_MESSAGES.auth };
+
+  const locked = checkLockout(guildId, user.id, now);
   if (locked !== null) return { ok: false, error: `יותר מדי ניסיונות שגויים. נסו שוב בעוד ${locked} דקות.` };
 
   const minAge = Number(getSetting(guildId, 'min_account_age_days') ?? 0);
-  if (minAge && accountCreatedAt && now - accountCreatedAt < minAge * 864e5) {
+  if (minAge && user.createdTimestamp && now - user.createdTimestamp < minAge * 864e5) {
     return { ok: false, error: `החשבון בדיסקורד חייב להיות בן ${minAge} ימים לפחות.` };
   }
 
-  const code = normCode(rawCode);
-  const fail = (msg) => {
-    const left = recordFailure(guildId, userId, now);
-    return { ok: false, error: `${msg} (נותרו ${left} ניסיונות)` };
-  };
-  if (code.length !== CODE_LEN) return fail('קוד לא תקין.');
+  ign = String(ign ?? '').trim();
+  const fail = (msg) => ({ ok: false, error: `${msg} (נותרו ${recordFailure(guildId, user.id, now)} ניסיונות)` });
+  if (!hypixel.IGN_RE.test(ign)) return fail('שם משתמש לא תקין (3-16 תווים: אותיות לטיניות, מספרים וקו תחתון).');
 
+  const mine = db.prepare('SELECT ign FROM mc_links WHERE guild_id = ? AND user_id = ?').get(guildId, user.id);
+  if (mine) return { ok: false, error: `כבר מקושר אליך החשבון **${mine.ign}**. פנו לצוות כדי לשנות.` };
+
+  let profile; let social;
   try {
-    return transaction(() => {
-      const mine = db.prepare('SELECT ign FROM mc_links WHERE guild_id = ? AND user_id = ?').get(guildId, userId);
-      if (mine) return { ok: false, error: `כבר מקושר אליך החשבון **${mine.ign}**. פנו לצוות כדי לשנות.` };
+    profile = await hypixel.resolveUuid(ign, { fetchImpl, now });
+    if (!profile) return fail(`לא נמצא שחקן בשם **${ign}**.`);
+    const taken = db.prepare('SELECT 1 FROM mc_links WHERE guild_id = ? AND uuid = ?').get(guildId, profile.uuid);
+    if (taken) return { ok: false, error: `החשבון **${profile.name}** כבר מקושר למשתמש אחר. אם זה החשבון שלכם, פנו לצוות.` };
+    social = await hypixel.getHypixelDiscord(profile.uuid, { apiKey, fetchImpl, now });
+  } catch (e) {
+    if (!(e instanceof hypixel.ServiceError)) throw e;
+    console.warn(`[verify] service error (${e.kind}): ${e.message}`); // בלי מפתח/כותרות
+    onServiceError?.(e);
+    return { ok: false, service: true, error: SERVICE_MESSAGES[e.kind] ?? SERVICE_MESSAGES.unavailable };
+  }
 
-      const row = db.prepare('SELECT * FROM verify_codes WHERE code_hash = ? AND guild_id = ?').get(hashCode(code), guildId);
-      if (!row || row.used) return fail('קוד שגוי או שכבר נוצל.');
-      if (row.expires_at <= now) return fail('הקוד פג תוקף. הריצו שוב /discord link במשחק.');
+  if (!social.found) return fail(`**${profile.name}** לא נמצא ב-Hypixel (לא נכנס/ה מעולם, או שהנתונים מוסתרים).`);
+  if (!social.discord) {
+    return fail(`בפרופיל ה-Hypixel של **${profile.name}** לא מוגדר חשבון Discord. הגדירו אותו (ראו הוראות בפאנל), המתינו כדקה, ונסו שוב.`);
+  }
+  if (!hypixel.discordHandleMatches(social.discord, user)) {
+    return fail(`בפרופיל ה-Hypixel של **${profile.name}** מוגדר Discord אחר. הקלידו שם בדיוק: \`${user.username}\` (שם המשתמש, לא שם התצוגה).`);
+  }
 
-      // UNIQUE(guild_id, uuid) ו-UNIQUE(guild_id, user_id) הם קו ההגנה האחרון מפני קישור כפול
-      const consumed = db.prepare('UPDATE verify_codes SET used = 1 WHERE code_hash = ? AND used = 0').run(row.code_hash);
-      if (consumed.changes !== 1) return fail('קוד שגוי או שכבר נוצל.');
-      try {
-        db.prepare('INSERT INTO mc_links (guild_id, user_id, uuid, ign, verified_at, proven) VALUES (?, ?, ?, ?, ?, 1)')
-          .run(guildId, userId, row.uuid, row.ign, now);
-      } catch (e) {
-        // זורקים כדי שהטרנזקציה כולה תתבטל (גם צריכת הקוד)
-        if (/UNIQUE/i.test(e.message)) throw Object.assign(new Error('dup'), { dup: true });
-        throw e;
-      }
-      db.prepare('DELETE FROM verify_attempts WHERE guild_id = ? AND user_id = ?').run(guildId, userId);
-      return { ok: true, ign: row.ign, uuid: row.uuid };
+  // רגע האמת: כתיבה אטומית. UNIQUE על (שרת,משתמש) ועל (שרת,UUID) חוסמים מרוץ בין ניסיונות מקבילים.
+  try {
+    transaction(() => {
+      db.prepare('INSERT INTO mc_links (guild_id, user_id, uuid, ign, verified_at, proven, method, matched_handle) VALUES (?, ?, ?, ?, ?, 1, ?, ?)')
+        .run(guildId, user.id, profile.uuid, profile.name, now, 'hypixel_social', String(social.discord).trim().toLowerCase());
+      db.prepare('DELETE FROM verify_attempts WHERE guild_id = ? AND user_id = ?').run(guildId, user.id);
     });
   } catch (e) {
-    if (e.dup) return { ok: false, error: 'החשבון הזה כבר מקושר למשתמש אחר. פנו לצוות.' };
+    if (/UNIQUE/i.test(e.message)) return { ok: false, error: 'החשבון הזה (או המשתמש שלך) כבר מקושר. אם זה לא צפוי, פנו לצוות.' };
     throw e;
   }
+  return { ok: true, ign: profile.name, uuid: profile.uuid };
 }
 
 /** נותן רול מאומת, מסיר לא-מאומת, ומסנכרן כינוי. מחזיר רשימת כשלונות (לא זורק). */
@@ -171,13 +135,12 @@ async function logToStaff(guild, text, color = COLORS.warn) {
     .catch((e) => console.warn(`[verify] modlog send failed: ${e.message}`));
 }
 
-/** מנקה קודים ישנים */
-function pruneCodes(now = Date.now()) {
-  db.prepare('DELETE FROM verify_codes WHERE expires_at < ?').run(now - 24 * 36e5);
+/** מנקה רשומות ניסיונות ישנות */
+function pruneAttempts(now = Date.now()) {
   db.prepare('DELETE FROM verify_attempts WHERE window_start < ?').run(now - FAIL_WINDOW_MS);
 }
 
 module.exports = {
-  issueCode, redeemCode, applyVerifiedState, reconcileMember, logToStaff, pruneCodes,
-  normUuid, normCode, fmtCode, hashCode, CODE_TTL_MS, MAX_FAILURES, ISSUE_COOLDOWN_MS, FAIL_WINDOW_MS,
+  verifyAccount, applyVerifiedState, reconcileMember, logToStaff, pruneAttempts,
+  MAX_FAILURES, FAIL_WINDOW_MS,
 };

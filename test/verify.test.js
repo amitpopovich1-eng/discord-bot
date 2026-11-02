@@ -1,296 +1,359 @@
 const h = require('./helpers');
 const test = require('node:test');
 const assert = require('node:assert');
-const http = require('node:http');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
 
+const KEY = 'hypixel-key-' + 'k'.repeat(24);
+process.env.HYPIXEL_API_KEY = KEY;
 const { db } = require('../src/db');
 const v = require('../src/verify');
-const { createApiServer, sign } = require('../src/api');
+const hyp = require('../src/hypixel');
+const { handleComponent } = require('../src/components');
 
 const G = 'g1';
-const UUID = '069a79f444e94726a5befca90e38aaf5';
-const UUID2 = 'f84c6a790a4e45e0879bcd49ebd4c4e2';
-const clean = () => db.exec('DELETE FROM mc_links; DELETE FROM verify_codes; DELETE FROM verify_attempts; DELETE FROM settings');
-const issue = (over = {}) => v.issueCode({ guildId: G, uuid: UUID, name: 'Notch', ...over });
+const UUID = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+const UUID2 = '0123456789abcdef0123456789abcdef';
+const clean = () => { db.exec('DELETE FROM mc_links; DELETE FROM verify_attempts; DELETE FROM settings'); hyp._resetForTests(); };
+const user = (id = 'u1', username = 'bob_dc', extra = {}) => ({ id, username, discriminator: '0', createdTimestamp: Date.now() - 400 * 864e5, ...extra });
+const res = (status, json) => ({ status, json: async () => { if (json === undefined) throw new Error('no body'); return json; } });
 
-test('הנפקת קוד: פורמט, אקראיות, ותוקף קצר', () => {
+/** Mojang + Hypixel מדומים. מחזיר fetchImpl ויומן קריאות. */
+function services(o = {}) {
+  const calls = [];
+  const cfg = {
+    mojang: { slorpi: { id: UUID, name: 'Slorpi' } },
+    hypixel: { [UUID]: { success: true, player: { uuid: UUID, displayname: 'Slorpi', socialMedia: { links: { DISCORD: 'bob_dc' } } } } },
+    ...o,
+  };
+  const fetchImpl = async (url, opts = {}) => {
+    calls.push({ url, opts });
+    if (cfg.delay) await new Promise((r) => setTimeout(r, cfg.delay));
+    if (url.startsWith('https://api.mojang.com/')) {
+      if (cfg.mojangFn) return cfg.mojangFn(url, opts);
+      const name = decodeURIComponent(url.split('/').pop()).toLowerCase();
+      return cfg.mojang[name] ? res(200, cfg.mojang[name]) : res(404, { error: 'NOT_FOUND' });
+    }
+    if (url.startsWith('https://api.minecraftservices.com/')) {
+      if (cfg.fallbackFn) return cfg.fallbackFn(url, opts);
+      return res(404, {});
+    }
+    if (url.startsWith('https://api.hypixel.net/v2/player')) {
+      if (cfg.hypixelFn) return cfg.hypixelFn(url, opts);
+      const uuid = new URL(url).searchParams.get('uuid');
+      return cfg.hypixel[uuid] ? res(200, cfg.hypixel[uuid]) : res(200, { success: true, player: null });
+    }
+    throw new Error('unexpected url ' + url);
+  };
+  return { fetchImpl, calls };
+}
+const verify = (u, ign, s, deps = {}) => v.verifyAccount({ guildId: G, user: u, ign }, { fetchImpl: s.fetchImpl, apiKey: KEY, ...deps });
+const linkCount = () => db.prepare('SELECT COUNT(*) n FROM mc_links').get().n;
+
+test('הצלחה: ה-Discord בפרופיל Hypixel תואם -> קישור נשמר עם השם הקנוני מ-Mojang', async () => {
   clean();
-  const r = issue({ now: 1_000_000 });
-  assert.strictEqual(r.status, 200);
-  assert.match(r.code, /^[A-HJKMNP-Z2-9]{4}-[A-HJKMNP-Z2-9]{4}$/);
-  assert.strictEqual(r.expiresAt - 1_000_000, 5 * 60_000);
-  // 200 קודים מחשבונות שונים - כולם שונים (אקראיות סבירה)
-  const codes = new Set();
-  for (let n = 0; n < 200; n++) codes.add(issue({ uuid: n.toString(16).padStart(32, '0'), now: 0 }).code);
-  assert.strictEqual(codes.size, 200);
+  const s = services();
+  const r = await verify(user(), 'slorpi', s); // אותיות קטנות
+  assert.deepStrictEqual([r.ok, r.ign, r.uuid], [true, 'Slorpi', UUID]);
+  const row = db.prepare('SELECT * FROM mc_links').get();
+  assert.deepStrictEqual([row.user_id, row.uuid, row.proven, row.method, row.matched_handle], ['u1', UUID, 1, 'hypixel_social', 'bob_dc']);
+  const hy = s.calls.find((c) => c.url.includes('hypixel'));
+  assert.strictEqual(hy.opts.headers['API-Key'], KEY, 'המפתח נשלח ב-header');
+  assert.ok(!hy.url.includes(KEY), 'המפתח לא נשלח ב-URL');
+  assert.ok(hy.opts.signal && hy.opts.redirect === 'error', 'timeout ואין redirect');
 });
 
-test('הקוד לא נשמר בטקסט גלוי ב-DB (רק HMAC)', () => {
+test('הזנת שם בלבד לא מאמתת: אין קישור בפרופיל / קישור לדיסקורד אחר / חשבון לא קיים ב-Hypixel', async () => {
   clean();
-  const { code } = issue();
-  const raw = v.normCode(code);
-  const rows = JSON.stringify(db.prepare('SELECT * FROM verify_codes').all());
-  assert.ok(!rows.includes(raw) && !rows.includes(code));
+  const noLink = services({ hypixel: { [UUID]: { success: true, player: { uuid: UUID, socialMedia: { links: {} } } } } });
+  assert.match((await verify(user(), 'Slorpi', noLink)).error, /לא מוגדר חשבון Discord/);
+  const noSocial = services({ hypixel: { [UUID]: { success: true, player: { uuid: UUID } } } });
+  assert.match((await verify(user(), 'Slorpi', noSocial)).error, /לא מוגדר חשבון Discord/);
+  const other = services({ hypixel: { [UUID]: { success: true, player: { uuid: UUID, socialMedia: { links: { DISCORD: 'someone_else' } } } } } });
+  const r = await verify(user(), 'Slorpi', other);
+  assert.match(r.error, /Discord אחר/);
+  assert.ok(r.error.includes('bob_dc'), 'מציג למשתמש מה להקליד');
+  assert.ok(!r.error.includes('someone_else'), 'לא חושף את הערך שבפרופיל');
+  const never = services({ hypixel: {} });
+  assert.match((await verify(user(), 'Slorpi', never)).error, /לא נמצא ב-Hypixel/);
+  assert.strictEqual(linkCount(), 0);
 });
 
-test('קלט לא תקין / חשבון מקושר / cooldown / קוד פעיל אחד לכל חשבון', () => {
-  clean();
-  assert.strictEqual(issue({ uuid: 'zzz' }).status, 400);
-  assert.strictEqual(issue({ name: 'bad name!' }).status, 400);
-  assert.strictEqual(issue({ name: '' }).status, 400);
-
-  const a = issue({ now: 0 });
-  const cool = issue({ now: 10_000 });
-  assert.strictEqual(cool.status, 429);
-  assert.strictEqual(cool.retryAfter, 20);
-
-  const b = issue({ now: 31_000 }); // אחרי ה-cooldown: קוד חדש מבטל את הישן
-  assert.strictEqual(b.status, 200);
-  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM verify_codes').get().n, 1);
-  assert.match(v.redeemCode(G, 'u1', a.code, { now: 32_000 }).error, /שגוי|נוצל/);
-  assert.strictEqual(v.redeemCode(G, 'u1', b.code, { now: 32_000 }).ok, true);
-
-  assert.strictEqual(issue({ now: 99_000 }).status, 409); // כבר מקושר
+test('השוואת שם המשתמש: מנרמלת בבטחה ולא מקבלת התאמות חלקיות או שם תצוגה', () => {
+  const m = (val, u) => hyp.discordHandleMatches(val, u);
+  const U = { username: 'foo', discriminator: '0' };
+  assert.ok(m('foo', U) && m('FOO', U) && m(' @Foo ', U) && m('foo#0', U) && m('foo#0000', U));
+  assert.ok(!m('foo2', U) && !m('xfoo', U) && !m('foo bar', U) && !m('', U) && !m(null, U) && !m(undefined, U) && !m('foo#1234', U));
+  assert.ok(m('foo#1234', { username: 'foo', discriminator: '1234' }), 'חשבון ישן שלא עבר מיגרציה');
+  assert.ok(!m('foo#9999', { username: 'foo', discriminator: '1234' }));
+  assert.ok(!m('foo', { username: '', discriminator: '0' }));
+  // שם תצוגה (global name) לא משתתף בהשוואה בכלל: מי שקבע לעצמו שם תצוגה זהה לא עובר
+  assert.ok(!m('victim_name', { username: 'attacker', globalName: 'victim_name', discriminator: '0' }));
 });
 
-test('מימוש תקין: קישור נוצר, הקוד חד-פעמי, UUID מנורמל', () => {
+test('מניעת התחזות: משתמש אחר לא יכול לתבוע חשבון שהפרופיל שלו מצביע על דיסקורד אחר', async () => {
   clean();
-  const { code } = issue();
-  const r = v.redeemCode(G, 'u1', code.toLowerCase().replace('-', ' '));
-  assert.deepStrictEqual([r.ok, r.ign, r.uuid], [true, 'Notch', UUID]);
-  const link = db.prepare('SELECT * FROM mc_links').get();
-  assert.deepStrictEqual([link.user_id, link.uuid, link.proven], ['u1', UUID, 1]);
-  // שימוש חוזר בקוד ע"י משתמש אחר
-  assert.match(v.redeemCode(G, 'u2', code).error, /שגוי|נוצל/);
-  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM mc_links').get().n, 1);
+  const s = services();
+  const r = await verify(user('attacker', 'attacker_dc'), 'Slorpi', s);
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(linkCount(), 0);
 });
 
-test('קוד שגוי / קצר / פג תוקף', () => {
+test('בלי HYPIXEL_API_KEY: נכשל סגור, בלי קריאות רשת ובלי קישור', async () => {
   clean();
-  const { code } = issue({ now: 0 });
-  assert.match(v.redeemCode(G, 'u1', 'ZZZZ-ZZZZ', { now: 1000 }).error, /שגוי/);
-  assert.match(v.redeemCode(G, 'u1', 'ab', { now: 1000 }).error, /לא תקין/);
-  assert.match(v.redeemCode(G, 'u1', code, { now: 5 * 60_000 + 1 }).error, /פג תוקף/);
-  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM mc_links').get().n, 0);
+  const s = services();
+  const r = await v.verifyAccount({ guildId: G, user: user(), ign: 'Slorpi' }, { fetchImpl: s.fetchImpl, apiKey: '' });
+  assert.deepStrictEqual([r.ok, r.service], [false, true]);
+  assert.strictEqual(s.calls.length, 0);
+  assert.strictEqual(linkCount(), 0);
 });
 
-test('הגבלת ניסיונות: 5 כשלונות נועלים גם קוד נכון, והנעילה פגה בחלון הבא', () => {
+test('Mojang: 404 = לא נמצא (נספר); 429/5xx בראשי = מעבר לגיבוי; כשל בשניהם = כשל שירות (לא נספר)', async () => {
   clean();
-  const { code } = issue({ now: 0 });
-  for (let n = 0; n < 5; n++) assert.strictEqual(v.redeemCode(G, 'u1', 'ZZZZ-ZZZZ', { now: 1000 + n }).ok, false);
-  const locked = v.redeemCode(G, 'u1', code, { now: 2000 });
+  const s404 = services({ mojang: {} });
+  assert.match((await verify(user(), 'Nobody1', s404)).error, /לא נמצא שחקן/);
+  assert.strictEqual(db.prepare('SELECT failures FROM verify_attempts').get().failures, 1);
+
+  clean(); hyp._resetForTests();
+  const fb = services({ mojangFn: () => res(429, {}), fallbackFn: () => res(200, { id: UUID, name: 'Slorpi' }) });
+  assert.strictEqual((await verify(user(), 'Slorpi', fb)).ok, true, 'הגיבוי הצליח');
+  assert.ok(fb.calls[1].url.startsWith('https://api.minecraftservices.com/'));
+
+  clean();
+  const both = services({ mojangFn: () => res(503, {}), fallbackFn: () => res(500, {}) });
+  const w = console.warn; console.warn = () => {};
+  const r = await verify(user(), 'Slorpi', both);
+  console.warn = w;
+  assert.deepStrictEqual([r.ok, r.service], [false, true]);
+  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM verify_attempts').get().n, 0, 'לא נספר נגד המשתמש');
+});
+
+test('Mojang: תשובה פגומה / שם שלא תואם / timeout / שגיאת רשת => כשל שירות, לא אימות', async () => {
+  const w = console.warn; console.warn = () => {};
+  const cases = {
+    'id לא תקין': { mojangFn: () => res(200, { id: 'zzz', name: 'Slorpi' }), fallbackFn: () => res(200, { id: 'zzz', name: 'Slorpi' }) },
+    'שם שונה': { mojangFn: () => res(200, { id: UUID, name: 'SomeoneElse' }), fallbackFn: () => res(200, { id: UUID, name: 'SomeoneElse' }) },
+    'JSON פגום': { mojangFn: () => res(200, undefined), fallbackFn: () => res(200, undefined) },
+    'רשת': { mojangFn: () => { throw new Error('ECONNRESET'); }, fallbackFn: () => { throw new Error('ECONNRESET'); } },
+    'timeout': { mojangFn: () => { throw Object.assign(new Error('t'), { name: 'TimeoutError' }); }, fallbackFn: () => { throw Object.assign(new Error('t'), { name: 'TimeoutError' }); } },
+  };
+  for (const [name, cfg] of Object.entries(cases)) {
+    clean();
+    const r = await verify(user(), 'Slorpi', services(cfg));
+    assert.deepStrictEqual([r.ok, r.service], [false, true], name);
+    assert.strictEqual(linkCount(), 0, name);
+  }
+  console.warn = w;
+});
+
+test('Mojang: תוצאות נשמרות בזיכרון (חיסכון בקריאות)', async () => {
+  clean();
+  const s = services();
+  await verify(user('a', 'x1'), 'Slorpi', s);
+  await verify(user('b', 'x2'), 'Slorpi', s);
+  assert.strictEqual(s.calls.filter((c) => c.url.includes('mojang.com')).length, 1);
+});
+
+test('Hypixel: 403/429/5xx/success=false/JSON פגום/UUID לא תואם => כשל שירות, בלי אימות', async () => {
+  const w = console.warn; console.warn = () => {};
+  const bad = {
+    '403 מפתח נדחה': () => res(403, { success: false, cause: 'Invalid API key' }),
+    '429': () => res(429, { success: false }),
+    '500': () => res(500, {}),
+    'success=false': () => res(200, { success: false }),
+    'JSON פגום': () => res(200, undefined),
+    'UUID לא תואם': () => res(200, { success: true, player: { uuid: UUID2, socialMedia: { links: { DISCORD: 'bob_dc' } } } }),
+    'רשת': () => { throw new Error('ECONNRESET'); },
+  };
+  for (const [name, hypixelFn] of Object.entries(bad)) {
+    clean();
+    const r = await verify(user(), 'Slorpi', services({ hypixelFn }));
+    assert.deepStrictEqual([r.ok, r.service], [false, true], name);
+    assert.strictEqual(linkCount(), 0, name);
+    assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM verify_attempts').get().n, 0, `${name}: לא נספר`);
+  }
+  // DISCORD שאינו מחרוזת = כאילו לא הוגדר
+  clean();
+  const weird = services({ hypixel: { [UUID]: { success: true, player: { uuid: UUID, socialMedia: { links: { DISCORD: { x: 1 } } } } } } });
+  assert.match((await verify(user(), 'Slorpi', weird)).error, /לא מוגדר/);
+  console.warn = w;
+});
+
+test('מפתח שנדחה: מדווח לצוות פעם אחת, והמפתח לא מופיע בשום לוג', async () => {
+  clean();
+  const logs = [];
+  const orig = { log: console.log, warn: console.warn, error: console.error };
+  for (const k of Object.keys(orig)) console[k] = (...a) => logs.push(a.map(String).join(' '));
+  let kinds = [];
+  try {
+    await verify(user(), 'Slorpi', services({ hypixelFn: () => res(403, { success: false }) }), { onServiceError: (e) => kinds.push(e.kind) });
+    await verify(user(), 'Slorpi', services({ hypixelFn: () => { throw new Error(`fetch failed for key ${'x'}`); } }));
+  } finally { Object.assign(console, orig); }
+  assert.deepStrictEqual(kinds, ['auth']);
+  assert.ok(!logs.join('\n').includes(KEY));
+  assert.ok(logs.some((l) => l.includes('[verify]')), 'כן נרשם אירוע (ללא סוד)');
+});
+
+test('מגבלה מקומית על קריאות ל-Hypixel מגינה על המפתח (20 לדקה) ואינה נספרת כניסיון', async () => {
+  clean();
+  const s = services({ hypixel: {} });
+  let limited = 0; const w = console.warn; console.warn = () => {};
+  for (let n = 0; n < 25; n++) {
+    const r = await verify(user(`u${n}`, `n${n}`), 'Slorpi', s);
+    if (r.service) limited++;
+  }
+  console.warn = w;
+  assert.strictEqual(s.calls.filter((c) => c.url.includes('hypixel.net')).length, 20);
+  assert.strictEqual(limited, 5);
+});
+
+test('נעילת ניסיונות: 5 כשלונות נועלים גם כשהכל תקין אחר כך; הנעילה פגה; כשלי שירות לא נספרים', async () => {
+  clean();
+  const mismatch = services({ hypixel: { [UUID]: { success: true, player: { uuid: UUID, socialMedia: { links: { DISCORD: 'other' } } } } } });
+  const t0 = 1_000_000;
+  for (let n = 0; n < 5; n++) assert.strictEqual((await verify(user(), 'Slorpi', mismatch, { now: t0 + n })).ok, false);
+  const good = services();
+  const locked = await verify(user(), 'Slorpi', good, { now: t0 + 10 });
   assert.match(locked.error, /יותר מדי ניסיונות/);
-  assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM mc_links').get().n, 0);
-  // משתמש אחר לא מושפע
-  const other = v.redeemCode(G, 'u2', code, { now: 2000 });
-  assert.strictEqual(other.ok, true);
-  // הנעילה פגה אחרי החלון
+  assert.strictEqual(good.calls.length, 0, 'נעילה נבדקת לפני כל קריאה חיצונית');
+  hyp._resetForTests();
+  assert.strictEqual((await verify(user(), 'Slorpi', services(), { now: t0 + v.FAIL_WINDOW_MS + 100 })).ok, true);
+
   clean();
-  const c2 = issue({ now: 0 });
-  for (let n = 0; n < 5; n++) v.redeemCode(G, 'u1', 'ZZZZ-ZZZZ', { now: 1000 });
-  assert.strictEqual(v.redeemCode(G, 'u1', c2.code, { now: 1000 + v.FAIL_WINDOW_MS + 1 }).error?.includes('פג תוקף'), true);
+  const w = console.warn; console.warn = () => {};
+  for (let n = 0; n < 8; n++) await verify(user(), 'Slorpi', services({ hypixelFn: () => res(500, {}) }), { now: t0 + n });
+  console.warn = w;
+  hyp._resetForTests();
+  assert.strictEqual((await verify(user(), 'Slorpi', services(), { now: t0 + 20 })).ok, true, 'כשלי שירות לא נועלים');
 });
 
-test('קישור מתחרה: אותו חשבון לשני משתמשים / משתמש אחד לשני חשבונות', () => {
+test('קישור מתחרה: חשבון שכבר מקושר למשתמש אחר / משתמש שכבר מקושר לחשבון אחר', async () => {
   clean();
-  const a = issue({ uuid: UUID, name: 'Notch' });
-  const b = issue({ uuid: UUID2, name: 'Jeb_' });
-  // שני משתמשים מנסים את אותו קוד: רק אחד מצליח
-  const results = [v.redeemCode(G, 'u1', a.code), v.redeemCode(G, 'u2', a.code)];
-  assert.deepStrictEqual(results.map((r) => r.ok), [true, false]);
-  // u1 כבר מקושר ולא יכול לקשר חשבון שני; הקוד של Jeb_ לא נצרך
-  const second = v.redeemCode(G, 'u1', b.code);
-  assert.match(second.error, /כבר מקושר/);
-  assert.strictEqual(db.prepare('SELECT used FROM verify_codes WHERE uuid = ?').get(UUID2).used, 0);
-  // u2 מממש את הקוד של Jeb_ בהצלחה
-  assert.strictEqual(v.redeemCode(G, 'u2', b.code).ok, true);
+  const s = services({ mojang: { slorpi: { id: UUID, name: 'Slorpi' }, jeb_: { id: UUID2, name: 'jeb_' } },
+    hypixel: { [UUID]: { success: true, player: { uuid: UUID, socialMedia: { links: { DISCORD: 'bob_dc' } } } },
+               [UUID2]: { success: true, player: { uuid: UUID2, socialMedia: { links: { DISCORD: 'bob_dc' } } } } } });
+  assert.strictEqual((await verify(user('u1'), 'Slorpi', s)).ok, true);
+  const hypixelCallsBefore = s.calls.filter((c) => c.url.includes('hypixel.net')).length;
+  // אותו חשבון, משתמש אחר: נדחה לפני פנייה ל-Hypixel
+  const stolen = await verify(user('u2', 'bob_dc'), 'Slorpi', s);
+  assert.match(stolen.error, /כבר מקושר למשתמש אחר/);
+  assert.strictEqual(s.calls.filter((c) => c.url.includes('hypixel.net')).length, hypixelCallsBefore);
+  // אותו משתמש, חשבון שני
+  assert.match((await verify(user('u1'), 'jeb_', s)).error, /כבר מקושר אליך/);
+  assert.strictEqual(linkCount(), 1);
 });
 
-test('קישור מתחרה באמצע: ה-UUID נתפס בין ההנפקה למימוש -> שום דבר לא נצרך', () => {
+test('מרוץ: שני ניסיונות מקבילים לאותו חשבון - בדיוק אחד מצליח', async () => {
   clean();
-  const { code } = issue();
-  db.prepare("INSERT INTO mc_links VALUES (?, 'someone', ?, 'Notch', 0, 1)").run(G, UUID); // נכנס "במקביל"
-  const r = v.redeemCode(G, 'u1', code);
-  assert.match(r.error, /כבר מקושר למשתמש אחר/);
-  assert.strictEqual(db.prepare("SELECT COUNT(*) n FROM mc_links WHERE user_id = 'u1'").get().n, 0);
-  assert.strictEqual(db.prepare('SELECT used FROM verify_codes').get().used, 0, 'הטרנזקציה בוטלה במלואה');
+  const s = services({ delay: 25 });
+  const [a, b] = await Promise.all([verify(user('u1'), 'Slorpi', s), verify(user('u2'), 'Slorpi', s)]);
+  assert.deepStrictEqual([a.ok, b.ok].sort(), [false, true]);
+  assert.strictEqual(linkCount(), 1);
+  // אותו משתמש פעמיים במקביל
+  clean(); hyp._resetForTests();
+  const s2 = services({ delay: 25, mojang: { slorpi: { id: UUID, name: 'Slorpi' }, jeb_: { id: UUID2, name: 'jeb_' } },
+    hypixel: { [UUID]: { success: true, player: { uuid: UUID, socialMedia: { links: { DISCORD: 'bob_dc' } } } }, [UUID2]: { success: true, player: { uuid: UUID2, socialMedia: { links: { DISCORD: 'bob_dc' } } } } } });
+  const [c, d] = await Promise.all([verify(user('u1'), 'Slorpi', s2), verify(user('u1'), 'jeb_', s2)]);
+  assert.deepStrictEqual([c.ok, d.ok].sort(), [false, true]);
+  assert.strictEqual(linkCount(), 1);
 });
 
-test('גיל חשבון דיסקורד מינימלי', () => {
+test('שם משתמש לא תקין / גיל חשבון מינימלי', async () => {
+  clean();
+  const s = services();
+  let n = 0;
+  for (const bad of ['', 'ab', 'a'.repeat(17), 'bad name', 'x;DROP', '<script>']) {
+    assert.match((await verify(user(`bad${n++}`), bad, s)).error, /לא תקין/, JSON.stringify(bad));
+  }
+  assert.strictEqual(s.calls.length, 0, 'אין קריאות רשת לשם לא תקין');
   clean();
   db.prepare("INSERT INTO settings VALUES (?, 'min_account_age_days', '30')").run(G);
-  const { code } = issue();
-  assert.match(v.redeemCode(G, 'u1', code, { accountCreatedAt: Date.now() - 5 * 864e5 }).error, /30 ימים/);
-  assert.strictEqual(v.redeemCode(G, 'u1', code, { accountCreatedAt: Date.now() - 40 * 864e5 }).ok, true);
+  assert.match((await verify(user('u1', 'bob_dc', { createdTimestamp: Date.now() - 5 * 864e5 }), 'Slorpi', services())).error, /30 ימים/);
+  assert.strictEqual((await verify(user('u1', 'bob_dc', { createdTimestamp: Date.now() - 40 * 864e5 }), 'Slorpi', services())).ok, true);
 });
 
-test('קוד משרת אחר לא תקף', () => {
-  clean();
-  const { code } = issue({ guildId: 'other' });
-  assert.match(v.redeemCode(G, 'u1', code).error, /שגוי/);
-});
-
-test('הפעלה מחדש אמיתית: קוד שהונפק בתהליך אחד ממומש בתהליך חדש', () => {
+test('הפעלה מחדש אמיתית: קישור ונעילת ניסיונות שורדים בתהליך חדש', () => {
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'vtest-')), 'bot.db');
   const run = (script) => execFileSync(process.execPath, ['--no-warnings', '-e', script], {
-    env: { ...process.env, DB_PATH: file, API_SECRET: h.SECRET }, cwd: path.join(__dirname, '..'), encoding: 'utf8',
+    env: { ...process.env, DB_PATH: file, HYPIXEL_API_KEY: KEY }, cwd: path.join(__dirname, '..'), encoding: 'utf8',
   }).trim();
-  const code = run(`console.log(require('./src/verify').issueCode({guildId:'g1',uuid:'${UUID}',name:'Notch'}).code)`);
-  const out = run(`const r=require('./src/verify').redeemCode('g1','u1','${code}');console.log(JSON.stringify(r))`);
-  assert.strictEqual(JSON.parse(out).ok, true);
-  // ותהליך שלישי רואה את הקישור ואת הקוד כנוצל
-  const out2 = run(`const v=require('./src/verify');console.log(JSON.stringify([v.redeemCode('g1','u2','${code}').ok, require('./src/db').db.prepare('SELECT COUNT(*) n FROM mc_links').get().n]))`);
-  assert.deepStrictEqual(JSON.parse(out2), [false, 1]);
+  const mock = `const U='${UUID}';const mk=(s,j)=>({status:s,json:async()=>j});
+    const f=(disc)=>async(url)=>url.includes('mojang.com')?mk(200,{id:U,name:'Slorpi'}):mk(200,{success:true,player:{uuid:U,socialMedia:{links:{DISCORD:disc}}}});
+    const v=require('./src/verify');const u=(id)=>({id,username:'bob_dc',discriminator:'0'});`;
+  // תהליך 1: 5 כשלונות של משתמש אחד, וקישור מוצלח של משתמש אחר
+  run(`${mock}(async()=>{for(let n=0;n<5;n++)await v.verifyAccount({guildId:'g1',user:u('bad'),ign:'Slorpi'},{fetchImpl:f('nope'),apiKey:'k'});
+    const r=await v.verifyAccount({guildId:'g1',user:u('good'),ign:'Slorpi'},{fetchImpl:f('bob_dc'),apiKey:'k'});console.log(r.ok)})()`);
+  // תהליך 2 (אחרי "הפעלה מחדש")
+  const out = JSON.parse(run(`${mock}(async()=>{const hyp=require('./src/hypixel');hyp._resetForTests();
+    const locked=await v.verifyAccount({guildId:'g1',user:u('bad'),ign:'Slorpi'},{fetchImpl:f('bob_dc'),apiKey:'k'});
+    const dup=await v.verifyAccount({guildId:'g1',user:u('other'),ign:'Slorpi'},{fetchImpl:f('bob_dc'),apiKey:'k'});
+    console.log(JSON.stringify({locked:locked.error,dup:dup.error,links:require('./src/db').db.prepare('SELECT user_id FROM mc_links').all()}))})()`));
+  assert.match(out.locked, /יותר מדי ניסיונות/);
+  assert.match(out.dup, /כבר מקושר למשתמש אחר/);
+  assert.deepStrictEqual(out.links, [{ user_id: 'good' }]);
 });
 
-test('applyVerifiedState: כשל ברולים לא נבלע - מדווח ללוג והקישור נשמר', async () => {
+test('applyVerifiedState: כשל ברולים לא נבלע - מדווח ללוג והקישור נשמר; reconcile משלים', async () => {
   clean();
   const guild = h.fakeGuild();
-  const log = h.fakeTextChannel('log');
-  guild.channels.cache.set('log', log);
+  const log = h.fakeTextChannel('log'); guild.channels.cache.set('log', log);
   db.prepare("INSERT INTO settings VALUES (?, 'verified_role', 'VR'), (?, 'modlog_channel', 'log')").run(G, G);
   const m = h.fakeMember('u1', { guild }); m.failRoles = true;
   const warn = console.warn; const warned = []; console.warn = (...a) => warned.push(a.join(' '));
-  const failures = await v.applyVerifiedState(m, 'Notch');
+  const failures = await v.applyVerifiedState(m, 'Slorpi');
   console.warn = warn;
-  assert.ok(failures.length >= 1);
-  assert.ok(warned.some((w) => w.includes('[verify]')));
+  assert.ok(failures.length >= 1 && warned.some((w) => w.includes('[verify]')));
   assert.ok(log.messages.length === 1 && JSON.stringify(log.messages[0]).includes('נכשלו'));
-  // תיקון: אחרי שההרשאות חזרו, reconcile משלים
   m.failRoles = false;
-  db.prepare("INSERT INTO mc_links VALUES (?, 'u1', ?, 'Notch', 0, 1)").run(G, UUID);
+  db.prepare("INSERT INTO mc_links (guild_id, user_id, uuid, ign, verified_at, proven) VALUES (?, 'u1', ?, 'Slorpi', 0, 1)").run(G, UUID);
   await v.reconcileMember(m);
   assert.ok(m._roles.has('VR'));
-  assert.strictEqual(m.nickname, 'Notch');
+  assert.strictEqual(m.nickname, 'Slorpi');
 });
 
 test('משתמש מקושר שחזר לשרת מקבל מחדש את מצב המאומת', async () => {
   clean();
   const guild = h.fakeGuild();
   db.prepare("INSERT INTO settings VALUES (?, 'verified_role', 'VR'), (?, 'unverified_role', 'UR')").run(G, G);
-  db.prepare("INSERT INTO mc_links VALUES (?, 'u1', ?, 'Notch', 0, 1)").run(G, UUID);
+  db.prepare("INSERT INTO mc_links (guild_id, user_id, uuid, ign, verified_at, proven) VALUES (?, 'u1', ?, 'Slorpi', 0, 1)").run(G, UUID);
   const m = h.fakeMember('u1', { guild, roles: ['UR'] });
   assert.ok(await v.reconcileMember(m));
   assert.ok(m._roles.has('VR') && !m._roles.has('UR'));
   assert.strictEqual(await v.reconcileMember(h.fakeMember('stranger', { guild })), null);
 });
 
-// ---------- API ----------
-async function withApi(fn, { client, now } = {}) {
-  const c = client ?? { guilds: { cache: Object.assign(new Map([['g1', {}]]), { first: () => ({ id: 'g1' }) }) } };
-  const t = { now: Date.now() };
-  const server = createApiServer(c, { secret: h.SECRET, now: now ?? (() => t.now) });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  const port = server.address().port;
-  const call = (method, p, { body = '', headers = {}, signed = true, ts = t.now, secret = h.SECRET } = {}) => new Promise((resolve, reject) => {
-    const hdr = { 'content-type': 'application/json', ...headers };
-    if (signed) { hdr['x-timestamp'] = String(ts); hdr['x-signature'] = sign(secret, String(ts), method, p, body); }
-    const req = http.request({ port, host: '127.0.0.1', method, path: p, headers: hdr }, (res) => {
-      let d = ''; res.on('data', (x) => (d += x)); res.on('end', () => { let j; try { j = JSON.parse(d); } catch { j = d; } resolve({ status: res.statusCode, body: j, headers: res.headers }); });
-    });
-    req.on('error', reject); req.end(body);
-  });
-  try { await fn({ call, t }); } finally { server.close(); server.closeAllConnections?.(); }
-}
-const body = (o) => JSON.stringify({ uuid: UUID, name: 'Notch', onlineMode: true, ...o });
-
-test('API: בקשה חתומה מנפיקה קוד שאפשר לממש', async () => {
+test('כפתור/מודל האימות עובדים רק מה-DB ומה-customId (שורדים הפעלה מחדש) ומעניקים רול רק בהצלחה', async () => {
   clean();
-  await withApi(async ({ call }) => {
-    const r = await call('POST', '/api/link/start', { body: body() });
-    assert.strictEqual(r.status, 200);
-    assert.match(r.body.code, /^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
-    assert.strictEqual(v.redeemCode('g1', 'u1', r.body.code).ok, true);
-    assert.strictEqual((await call('GET', '/health', { signed: false })).status, 200);
-  });
-});
-
-test('API: חתימה/חותמת זמן שגויות, replay, offline-mode, קלט פגום', async () => {
-  clean();
-  await withApi(async ({ call, t }) => {
-    assert.strictEqual((await call('POST', '/api/link/start', { body: body(), signed: false })).status, 401);
-    assert.strictEqual((await call('POST', '/api/link/start', { body: body(), secret: 'x'.repeat(40) })).status, 401);
-    assert.strictEqual((await call('POST', '/api/link/start', { body: body(), ts: t.now - 120_000 })).status, 401);
-    assert.strictEqual((await call('POST', '/api/link/start', { body: body(), ts: t.now + 120_000 })).status, 401);
-    // גוף שונה מהחתום
-    const hdr = { 'x-timestamp': String(t.now), 'x-signature': sign(h.SECRET, String(t.now), 'POST', '/api/link/start', body()) };
-    assert.strictEqual((await call('POST', '/api/link/start', { body: body({ name: 'Evil' }), signed: false, headers: hdr })).status, 401);
-    // replay של אותה בקשה חתומה
-    const ok = await call('POST', '/api/link/start', { body: body({ uuid: UUID2, name: 'Jeb_' }), ts: t.now });
-    assert.strictEqual(ok.status, 200);
-    const replay = await call('POST', '/api/link/start', { body: body({ uuid: UUID2, name: 'Jeb_' }), ts: t.now });
-    assert.deepStrictEqual([replay.status, replay.body.error], [401, 'replayed']);
-    // UUID מ-offline-mode לא נחשב הוכחה
-    const off = await call('POST', '/api/link/start', { body: body({ onlineMode: false }), ts: t.now + 1 });
-    assert.deepStrictEqual([off.status, off.body.error], [403, 'offline_uuid_not_trusted']);
-    const missing = await call('POST', '/api/link/start', { body: JSON.stringify({ uuid: UUID, name: 'Notch' }), ts: t.now + 2 });
-    assert.strictEqual(missing.status, 403);
-    assert.strictEqual((await call('POST', '/api/link/start', { body: 'not json', ts: t.now + 3 })).status, 400);
-    assert.strictEqual((await call('POST', '/api/link/start', { body: JSON.stringify({ uuid: 5 }), ts: t.now + 4 })).status, 400);
-    assert.strictEqual((await call('POST', '/api/link/start', { body: body({ uuid: 'nothex' }), ts: t.now + 5 })).status, 400);
-    assert.strictEqual((await call('GET', '/api/link/start', { ts: t.now + 6 })).status, 404);
-    assert.strictEqual((await call('POST', '/api/other', { signed: false })).status, 404);
-  });
-});
-
-test('API: cooldown מחזיר 429 עם Retry-After; גוף ענק נדחה; rate limit לפי IP', async () => {
-  clean();
-  await withApi(async ({ call, t }) => {
-    assert.strictEqual((await call('POST', '/api/link/start', { body: body(), ts: t.now })).status, 200);
-    const again = await call('POST', '/api/link/start', { body: body(), ts: t.now + 1 });
-    assert.strictEqual(again.status, 429);
-    assert.ok(Number(again.headers['retry-after']) > 0);
-    const big = await call('POST', '/api/link/start', { body: 'x'.repeat(5000), ts: t.now + 2 }).catch((e) => ({ status: e.code }));
-    assert.ok([413, 'ECONNRESET', 'EPIPE'].includes(big.status), `got ${big.status}`);
-    let last;
-    for (let n = 0; n < 70; n++) last = await call('GET', '/health', { signed: false });
-    assert.strictEqual(last.status, 429);
-  });
-});
-
-test('API: חשבון מקושר -> 409; שרת לא מוגדר -> 503', async () => {
-  clean();
-  db.prepare("INSERT INTO mc_links VALUES ('g1', 'u1', ?, 'Notch', 0, 1)").run(UUID);
-  await withApi(async ({ call, t }) => {
-    assert.strictEqual((await call('POST', '/api/link/start', { body: body(), ts: t.now })).status, 409);
-  });
-  const prev = process.env.GUILD_ID; delete process.env.GUILD_ID;
-  await withApi(async ({ call, t }) => {
-    assert.strictEqual((await call('POST', '/api/link/start', { body: body(), ts: t.now })).status, 503);
-  }, { client: { guilds: { cache: Object.assign(new Map(), { first: () => undefined }) } } });
-  if (prev) process.env.GUILD_ID = prev;
-});
-
-test('סודות וקודים לא נכתבים ללוג, גם בנתיבי שגיאה', async () => {
-  clean();
-  const logs = [];
-  const orig = { log: console.log, warn: console.warn, error: console.error };
-  for (const k of Object.keys(orig)) console[k] = (...a) => logs.push(a.map(String).join(' '));
-  let code;
+  const realFetch = global.fetch;
+  const guild = h.fakeGuild();
+  db.prepare("INSERT INTO settings VALUES (?, 'verified_role', 'VR'), (?, 'unverified_role', 'UR')").run(G, G);
+  const mk = (customId, ign, username = 'bob_dc') => {
+    const member = h.fakeMember('u1', { guild, roles: ['UR'] });
+    member.user.username = username; member.user.discriminator = '0';
+    const i = h.fakeInteraction({ guild, user: member.user, member, fields: { ign } });
+    i.customId = customId; i.showModal = async (m) => { i.modal = m; };
+    return i;
+  };
   try {
-    await withApi(async ({ call, t }) => {
-      code = (await call('POST', '/api/link/start', { body: body(), ts: t.now })).body.code;
-      await call('POST', '/api/link/start', { body: 'garbage', ts: t.now + 1, secret: 'y'.repeat(40) });
-      await call('POST', '/api/link/start', { body: body(), ts: t.now + 2 });
-    });
-  } finally { Object.assign(console, orig); }
-  const joined = logs.join('\n');
-  assert.ok(!joined.includes(h.SECRET) && !joined.includes(code) && !joined.includes(v.normCode(code)));
-});
-
-test('API לא עולה בלי סוד או עם סוד קצר', () => {
-  const { startApi } = require('../src/api');
-  const prev = process.env.API_SECRET;
-  const errs = []; const orig = { e: console.error, w: console.warn }; console.error = (...a) => errs.push(a.join(' ')); console.warn = (...a) => errs.push(a.join(' '));
-  try {
-    delete process.env.API_SECRET;
-    assert.strictEqual(startApi({}), null);
-    process.env.API_SECRET = 'short';
-    assert.strictEqual(startApi({}), null);
-  } finally { process.env.API_SECRET = prev; console.error = orig.e; console.warn = orig.w; }
-  assert.ok(errs.some((e) => e.includes('32')));
+    // לחיצה על הכפתור פותחת מודל
+    const click = mk('verify_start'); await handleComponent(click);
+    assert.ok(click.modal, 'נפתח מודל');
+    // שם בלבד, בלי קישור בפרופיל => אין רול
+    global.fetch = services({ hypixel: { [UUID]: { success: true, player: { uuid: UUID, socialMedia: { links: {} } } } } }).fetchImpl;
+    const no = mk('verify_modal', 'Slorpi'); await handleComponent(no);
+    assert.match(h.allText(no), /לא מוגדר חשבון Discord/);
+    assert.ok(!no.member._roles.has('VR') && no.member._roles.has('UR'));
+    // התאמה => רול
+    hyp._resetForTests();
+    global.fetch = services().fetchImpl;
+    const yes = mk('verify_modal', 'Slorpi'); await handleComponent(yes);
+    assert.match(h.allText(yes), /קושר בהצלחה/);
+    assert.ok(yes.member._roles.has('VR') && !yes.member._roles.has('UR'));
+    // לחיצה חוזרת אחרי קישור: מסנכרנת רולים ולא פותחת מודל
+    const again = mk('verify_start'); await handleComponent(again);
+    assert.match(h.allText(again), /כבר אומת/);
+    assert.ok(!again.modal);
+  } finally { global.fetch = realFetch; }
 });

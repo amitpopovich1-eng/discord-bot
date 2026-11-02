@@ -95,7 +95,7 @@ module.exports = {
           `שרת מיינקראפט: ${getSetting(g, 'mc_address') ?? '—'}`,
           `גיל חשבון מינימלי: ${getSetting(g, 'min_account_age_days') ?? 0} ימים`,
           `⭐ נדרשים: ${getSetting(g, 'starboard_threshold') ?? 3}`,
-          `אימות: ${process.env.API_SECRET ? 'עם הוכחת בעלות (פלאגין)' : '⚠️ ללא הוכחת בעלות'}`,
+          `אימות מיינקראפט: ${process.env.HYPIXEL_API_KEY ? 'פעיל (דרך Hypixel)' : '⚠️ כבוי - חסר HYPIXEL_API_KEY'}`,
         ].join('\n') },
       );
     return i.reply({ embeds: [e], flags: 64, allowedMentions: { parse: [] } });

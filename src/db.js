@@ -100,6 +100,12 @@ CREATE TABLE IF NOT EXISTS starboard (
   CREATE INDEX idx_tickets_user ON tickets (guild_id, user_id, status);
   CREATE INDEX idx_cases_tempban ON cases (type, active, expires_at);
   `,
+  // 3: אימות דרך קישור Discord בפרופיל Hypixel (במקום קודים מפלאגין שרת)
+  `
+  DROP TABLE IF EXISTS verify_codes;
+  ALTER TABLE mc_links ADD COLUMN method TEXT;
+  ALTER TABLE mc_links ADD COLUMN matched_handle TEXT;
+  `,
 ];
 
 function migrate() {

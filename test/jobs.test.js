@@ -59,7 +59,7 @@ test('נתונים נשמרים אחרי הפעלה מחדש אמיתית (קו�
   }).trim();
   run(`const {db,setSetting}=require('./src/db');setSetting('g1','automod','1');
     db.prepare("INSERT INTO cases (guild_id,case_no,type,user_id,mod_id,reason,created_at,expires_at,active) VALUES ('g1',1,'tempban','u','m','x',0,9999999999999,1)").run();
-    db.prepare("INSERT INTO mc_links VALUES ('g1','u1','abc','Notch',0,1)").run();
+    db.prepare("INSERT INTO mc_links (guild_id,user_id,uuid,ign,verified_at,proven) VALUES ('g1','u1','abc','Notch',0,1)").run();
     db.prepare("INSERT INTO giveaways (guild_id,channel_id,prize,winners,ends_at,host_id) VALUES ('g1','c','p',1,9999999999999,'h')").run();`);
   const out = JSON.parse(run(`const {db,getSetting}=require('./src/db');console.log(JSON.stringify({
     setting:getSetting('g1','automod'),
@@ -67,7 +67,7 @@ test('נתונים נשמרים אחרי הפעלה מחדש אמיתית (קו�
     link:db.prepare("SELECT ign FROM mc_links").get().ign,
     gw:db.prepare("SELECT ended FROM giveaways").get().ended,
     version:db.prepare('PRAGMA user_version').get().user_version}))`));
-  assert.deepStrictEqual(out, { setting: '1', tempban: 1, link: 'Notch', gw: 0, version: 2 });
+  assert.deepStrictEqual(out, { setting: '1', tempban: 1, link: 'Notch', gw: 0, version: 3 });
 });
 
 test('מיגרציה: DB ישן (גרסה 0, סכמה מלפני המיגרציות) משודרג בלי אובדן נתונים', () => {
@@ -78,9 +78,9 @@ test('מיגרציה: DB ישן (גרסה 0, סכמה מלפני המיגרצי�
     INSERT INTO settings VALUES ('g1','automod','1');`);
   old.close();
   const out = execFileSync(process.execPath, ['--no-warnings', '-e',
-    `const {db,getSetting}=require('./src/db');console.log(getSetting('g1','automod'),db.prepare('PRAGMA user_version').get().user_version,db.prepare("SELECT name FROM sqlite_master WHERE name='verify_codes'").all().length)`],
+    `const {db,getSetting}=require('./src/db');console.log(getSetting('g1','automod'),db.prepare('PRAGMA user_version').get().user_version,db.prepare("SELECT name FROM sqlite_master WHERE name='verify_codes'").all().length,db.prepare("SELECT COUNT(*) n FROM pragma_table_info('mc_links') WHERE name IN ('method','matched_handle')").get().n)`],
   { env: { ...process.env, DB_PATH: file }, cwd: path.join(__dirname, '..'), encoding: 'utf8' }).trim();
-  assert.strictEqual(out, '1 2 1');
+  assert.strictEqual(out, '1 3 0 2'); // גרסה 3, verify_codes הוסרה, העמודות החדשות קיימות
 });
 
 test('DB_PATH לא כתיב: יציאה עם הודעה ברורה, לא קריסה סתומה', () => {
